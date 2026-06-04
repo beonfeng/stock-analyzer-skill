@@ -143,6 +143,24 @@ def cmd_sector(args):
 
 
 def main():
+    import sys
+
+    # 预处理参数：如果没有指定子命令，默认使用 analyze
+    args_list = sys.argv[1:]
+    known_commands = ["analyze", "compare", "sector", "--help", "-h", "--version", "-v"]
+
+    # 检查是否需要添加默认子命令
+    need_analyze = False
+    if not args_list:
+        # 没有参数，显示帮助
+        need_analyze = False
+    elif args_list[0] not in known_commands and not args_list[0].startswith('-'):
+        # 第一个参数不是已知命令也不是选项，认为是股票代码
+        need_analyze = True
+
+    if need_analyze:
+        sys.argv = [sys.argv[0], "analyze"] + args_list
+
     parser = argparse.ArgumentParser(
         prog="stock_analyzer",
         description="""
@@ -225,18 +243,6 @@ def main():
     )
 
     args = parser.parse_args()
-
-    # 如果没有子命令，默认为 analyze
-    if args.command is None:
-        # 检查是否有位置参数
-        import sys
-        if len(sys.argv) > 1 and not sys.argv[1].startswith('-'):
-            # 默认行为：分析股票
-            args.command = "analyze"
-            args.codes = [arg for arg in sys.argv[1:] if not arg.startswith('-')]
-        else:
-            parser.print_help()
-            return
 
     # 执行对应命令
     if args.command == "analyze":
