@@ -2,7 +2,7 @@ import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent / "scripts"))
 
-from comparison import compare_two_stocks, generate_comparison_table
+from comparison import compare_two_stocks, generate_comparison_table, get_sector_stocks, analyze_sector
 
 
 def test_compare_two_stocks():
@@ -47,3 +47,31 @@ def test_generate_comparison_table():
     assert "茅台" in table
     assert "五粮液" in table
     assert "估值" in table
+
+
+def test_get_sector_stocks():
+    """测试获取板块代表性股票"""
+    stocks = get_sector_stocks("白酒")
+    assert len(stocks) >= 3
+    assert "600519" in stocks  # 贵州茅台
+
+
+def test_get_sector_stocks_unknown():
+    """测试未知板块"""
+    stocks = get_sector_stocks("未知板块")
+    assert len(stocks) == 0
+
+
+def test_analyze_sector():
+    """测试板块分析"""
+    # 模拟板块分析结果
+    sector_data = {
+        "sector_name": "白酒",
+        "stocks": [
+            {"code": "600519", "name": "贵州茅台", "change_pct": 1.5},
+            {"code": "000858", "name": "五粮液", "change_pct": 0.8},
+        ],
+    }
+    result = analyze_sector(sector_data)
+    assert "avg_change" in result
+    assert "trend" in result

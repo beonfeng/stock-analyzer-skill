@@ -199,3 +199,85 @@ def generate_comparison_table(
         lines.append(f"| {dim} | {val_a} | {val_b} | {winner_str} | {note} |")
 
     return "\n".join(lines)
+
+
+# 板块代表性股票映射
+SECTOR_STOCKS = {
+    "白酒": ["600519", "000858", "000568", "002304", "603369"],
+    "新能源": ["300750", "002594", "601012", "600438", "002129"],
+    "半导体": ["688981", "002371", "603501", "688012", "002049"],
+    "银行": ["601398", "600036", "601288", "600016", "601166"],
+    "医药": ["600276", "000538", "300760", "603259", "002007"],
+    "消费": ["600887", "000568", "603288", "002304", "600519"],
+    "科技": ["002415", "300059", "002230", "688111", "002475"],
+    "地产": ["000002", "600048", "001979", "600383", "000069"],
+    "军工": ["600893", "000768", "600760", "002179", "600862"],
+    "汽车": ["002594", "601238", "000625", "600104", "601633"],
+}
+
+
+def get_sector_stocks(sector_name: str) -> List[str]:
+    """
+    获取板块代表性股票代码列表。
+
+    Args:
+        sector_name: 板块名称
+
+    Returns:
+        list: 股票代码列表
+    """
+    return SECTOR_STOCKS.get(sector_name, [])
+
+
+def analyze_sector(sector_data: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    分析板块整体情况。
+
+    Args:
+        sector_data: 板块数据，包含 stocks 列表
+
+    Returns:
+        dict: {
+            'sector_name': str,
+            'avg_change': float,
+            'trend': str,
+            'stocks_count': int,
+            'up_count': int,
+            'down_count': int
+        }
+    """
+    stocks = sector_data.get("stocks", [])
+    if not stocks:
+        return {
+            "sector_name": sector_data.get("sector_name", ""),
+            "avg_change": 0.0,
+            "trend": "无数据",
+            "stocks_count": 0,
+            "up_count": 0,
+            "down_count": 0,
+        }
+
+    changes = [s.get("change_pct", 0) for s in stocks]
+    avg_change = sum(changes) / len(changes)
+    up_count = sum(1 for c in changes if c > 0)
+    down_count = sum(1 for c in changes if c < 0)
+
+    if avg_change > 2:
+        trend = "强势上涨"
+    elif avg_change > 0.5:
+        trend = "温和上涨"
+    elif avg_change > -0.5:
+        trend = "横盘震荡"
+    elif avg_change > -2:
+        trend = "温和下跌"
+    else:
+        trend = "弱势下跌"
+
+    return {
+        "sector_name": sector_data.get("sector_name", ""),
+        "avg_change": round(avg_change, 2),
+        "trend": trend,
+        "stocks_count": len(stocks),
+        "up_count": up_count,
+        "down_count": down_count,
+    }
