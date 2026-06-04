@@ -16,6 +16,7 @@ from scripts.analyzer import (
     analyze_stock,
     compare_stocks_wrapper,
     analyze_sector_wrapper,
+    resolve_stock_code,
 )
 from scripts.comparison import generate_comparison_table
 
@@ -24,6 +25,8 @@ def cmd_analyze(args):
     """分析股票"""
     for code in args.codes:
         code = code.strip()
+        # 支持股票名称输入，自动转换为代码
+        code = resolve_stock_code(code)
         try:
             analyze_stock(code, args.output)
         except Exception as e:
@@ -33,8 +36,9 @@ def cmd_analyze(args):
 
 def cmd_compare(args):
     """双股对比"""
-    code_a = args.code_a.strip()
-    code_b = args.code_b.strip()
+    # 支持股票名称输入，自动转换为代码
+    code_a = resolve_stock_code(args.code_a.strip())
+    code_b = resolve_stock_code(args.code_b.strip())
 
     print(f"\n{'='*60}")
     print(f"  双股对比: {code_a} vs {code_b}")

@@ -299,6 +299,39 @@ _STOCK_NAMES = {
     "688561": "奇安信", "688599": "天合光能", "688981": "中芯国际",
 }
 
+# 反向映射：股票名称 -> 代码
+_NAME_TO_CODE = {v: k for k, v in _STOCK_NAMES.items()}
+
+
+def resolve_stock_code(input_str):
+    """
+    解析股票输入，支持代码或名称。
+
+    Args:
+        input_str: 股票代码（如 000333）或名称（如 美的集团）
+
+    Returns:
+        str: 股票代码
+    """
+    input_str = input_str.strip()
+
+    # 如果是纯数字，直接返回
+    if input_str.isdigit():
+        return input_str
+
+    # 尝试从名称映射中查找
+    code = _NAME_TO_CODE.get(input_str)
+    if code:
+        return code
+
+    # 模糊匹配（包含关系）
+    for name, code in _NAME_TO_CODE.items():
+        if input_str in name or name in input_str:
+            return code
+
+    # 如果都找不到，返回原值（让后续处理报错）
+    return input_str
+
 # 常见港股名称映射
 _HK_STOCK_NAMES = {
     "00700": "腾讯控股", "09988": "阿里巴巴", "09618": "京东",

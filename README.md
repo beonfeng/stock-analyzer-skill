@@ -28,14 +28,17 @@
 ### 命令行
 
 ```bash
-# 分析单只股票
+# 分析单只股票（支持代码或名称）
 python stock_analyzer.py 000333
+python stock_analyzer.py 美的集团
 
 # 批量分析
 python stock_analyzer.py 000333 600519 300750
+python stock_analyzer.py 美的集团 贵州茅台 宁德时代
 
 # 双股对比
 python stock_analyzer.py compare 600519 000858
+python stock_analyzer.py compare 贵州茅台 五粮液
 
 # 板块分析
 python stock_analyzer.py sector 白酒
