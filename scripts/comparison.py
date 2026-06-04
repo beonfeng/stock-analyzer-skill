@@ -190,9 +190,9 @@ def generate_comparison_table(
         note = item.get("note", "")
 
         if winner == "a":
-            winner_str = f"✓ {name_a}"
+            winner_str = f">> {name_a}"
         elif winner == "b":
-            winner_str = f"✓ {name_b}"
+            winner_str = f">> {name_b}"
         else:
             winner_str = "平手"
 
@@ -280,4 +280,5 @@ def analyze_sector(sector_data: Dict[str, Any]) -> Dict[str, Any]:
         "stocks_count": len(stocks),
         "up_count": up_count,
         "down_count": down_count,
+        "stocks": stocks,
     }
