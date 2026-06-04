@@ -129,3 +129,104 @@ def calc_target_price(
         "risk_reward_ratio": risk_reward_ratio,
         "description": f"目标价 {target:.2f}，预期涨幅 {upside_pct:.2f}%",
     }
+
+
+def calc_support_resistance(
+    df: pd.DataFrame,
+    current_price: float,
+    indicators: Dict[str, float]
+) -> Dict[str, Any]:
+    """
+    计算支撑位和压力位。
+
+    综合布林带、均线、近期高低点计算。
+
+    Args:
+        df: K线数据 DataFrame
+        current_price: 当前价格
+        indicators: 技术指标字典
+
+    Returns:
+        dict: {
+            'resistance': [{'price': float, 'source': str}, ...],
+            'support': [{'price': float, 'source': str}, ...]
+        }
+    """
+    resistance = []
+    support = []
+
+    # 1. 布林带
+    boll_up = indicators.get("BOLL_UP", 0)
+    boll_mid = indicators.get("BOLL_MID", 0)
+    boll_dn = indicators.get("BOLL_DN", 0)
+
+    if boll_up > current_price:
+        resistance.append({"price": round(boll_up, 2), "source": "布林上轨"})
+    if boll_mid > current_price:
+        resistance.append({"price": round(boll_mid, 2), "source": "布林中轨"})
+    elif boll_mid < current_price:
+        support.append({"price": round(boll_mid, 2), "source": "布林中轨"})
+    if boll_dn < current_price:
+        support.append({"price": round(boll_dn, 2), "source": "布林下轨"})
+
+    # 2. 均线
+    for ma_key in ["MA20", "MA60", "MA120", "MA250"]:
+        ma_val = indicators.get(ma_key, 0)
+        if ma_val <= 0:
+            continue
+        if ma_val > current_price:
+            resistance.append({"price": round(ma_val, 2), "source": ma_key})
+        else:
+            support.append({"price": round(ma_val, 2), "source": ma_key})
+
+    # 3. 近期高低点
+    if len(df) >= 20:
+        recent_20 = df.tail(20)
+        high_20 = recent_20["最高"].max()
+        low_20 = recent_20["最低"].min()
+
+        if high_20 > current_price:
+            resistance.append({"price": round(high_20, 2), "source": "20日最高"})
+        if low_20 < current_price:
+            support.append({"price": round(low_20, 2), "source": "20日最低"})
+
+    if len(df) >= 60:
+        recent_60 = df.tail(60)
+        high_60 = recent_60["最高"].max()
+        low_60 = recent_60["最低"].min()
+
+        if high_60 > current_price and high_60 != high_20:
+            resistance.append({"price": round(high_60, 2), "source": "60日最高"})
+        if low_60 < current_price and low_60 != low_20:
+            support.append({"price": round(low_60, 2), "source": "60日最低"})
+
+    # 4. 斐波那契回撤（基于近期高低点）
+    if len(df) >= 20:
+        swing_high = high_20
+        swing_low = low_20
+        fib_range = swing_high - swing_low
+
+        for ratio, name in [(0.382, "38.2%"), (0.5, "50%"), (0.618, "61.8%")]:
+            fib_price = swing_high - fib_range * ratio
+            if fib_price > current_price:
+                resistance.append({"price": round(fib_price, 2), "source": f"斐波那契{name}"})
+            elif fib_price < current_price:
+                support.append({"price": round(fib_price, 2), "source": f"斐波那契{name}"})
+
+    # 去重并排序
+    resistance = sorted(
+        [{"price": r["price"], "source": r["source"]} for r in
+         {item["price"]: item for item in resistance}.values()],
+        key=lambda x: x["price"]
+    )
+    support = sorted(
+        [{"price": s["price"], "source": s["source"]} for s in
+         {item["price"]: item for item in support}.values()],
+        key=lambda x: x["price"],
+        reverse=True
+    )
+
+    return {
+        "resistance": resistance[:5],  # 最多 5 个压力位
+        "support": support[:5],        # 最多 5 个支撑位
+    }
