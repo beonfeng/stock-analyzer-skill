@@ -7,7 +7,6 @@
 
 from typing import Dict, Any, Optional
 import pandas as pd
-import numpy as np
 
 
 # A 股不同板块的涨跌停幅度

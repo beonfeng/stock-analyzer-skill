@@ -163,10 +163,10 @@ description: Use when the user asks to analyze a stock, industry, or sector — 
 
 ```bash
 # 分析单只股票
-python C:\Users\risky\.claude\skills\stock-analyzer\stock_analyzer.py 000001
+python stock_analyzer.py 000001
 
 # 分析多只股票
-python C:\Users\risky\.claude\skills\stock-analyzer\stock_analyzer.py 000001 600519 000858
+python stock_analyzer.py 000001 600519 000858
 ```
 
 脚本自动在当前工作目录下创建 `股票代码-股票名称/` 文件夹，内含综合分析报告。
@@ -179,38 +179,41 @@ python C:\Users\risky\.claude\skills\stock-analyzer\stock_analyzer.py 000001 600
 - 资金面信号解读
 - 风险提示
 
-## 新增功能使用
+### 3. 双股对比和板块分析
 
-### 双股对比
-```bash
-python stock_analyzer.py compare 600519 000858
+通过 Python 代码调用：
+
+```python
+from scripts.analyzer import compare_stocks_wrapper, analyze_sector_wrapper
+
+# 双股对比
+result = compare_stocks_wrapper("600519", "000858")
+
+# 板块分析
+result = analyze_sector_wrapper("白酒")
 ```
 
-### 板块分析
-```bash
-python stock_analyzer.py sector 白酒
-```
+### 4. 加权评分报告
 
-### 加权评分报告
-分析报告中自动包含加权信号评分、操作建议、支撑压力位、风控提示。
+分析报告中自动包含：
+- 加权信号评分（十二章）
+- 操作建议（十三章）
+- 支撑压力位（十四章）
+- 新闻情感分析（十五章）
+- 风控提示（十六章）
 
 ## 依赖安装
 
-脚本使用 `http.client` 直连东方财富 API，仅需基础依赖：
-
 ```bash
-pip install pandas numpy
+pip install -r requirements.txt
 ```
 
-无需安装 akshare（脚本内置东方财富 API 封装，绕过系统代理）。
-
-如遇网络不稳定，脚本会自动重试（最多 8 次）。
-
-## 依赖
-
+**依赖说明：**
 - `pandas` — 数据处理
 - `numpy` — 数值计算
 - `http.client` / `ssl` — 直连 HTTPS（Python 内置，绕过系统代理）
+
+如遇网络不稳定，脚本会自动重试（最多 8 次）。
 
 ## 目录结构
 
