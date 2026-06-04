@@ -144,33 +144,85 @@ def cmd_sector(args):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="股票综合分析工具（支持 A 股和港股）",
+        prog="stock_analyzer",
+        description="""
+╔══════════════════════════════════════════════════════════════╗
+║           Stock Analyzer - A股综合分析工具                   ║
+║           基于东方财富 API 直连，自动生成分析报告             ║
+╚══════════════════════════════════════════════════════════════╝
+        """,
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
-示例:
-  python stock_analyzer.py 000333                    # 分析单只股票
-  python stock_analyzer.py 000333 600519 300750      # 批量分析
-  python stock_analyzer.py compare 600519 000858     # 双股对比
-  python stock_analyzer.py sector 白酒               # 板块分析
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+使用示例:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  # 分析单只股票
+  python stock_analyzer.py 000333
+
+  # 批量分析多只股票
+  python stock_analyzer.py 000333 600519 300750
+
+  # 双股对比分析
+  python stock_analyzer.py compare 600519 000858
+
+  # 板块分析
+  python stock_analyzer.py sector 白酒
+
+  # 指定输出目录
+  python stock_analyzer.py -o ./reports 600519
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+支持板块:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  白酒 | 新能源 | 半导体 | 银行 | 医药 | 消费 | 科技 | 地产 | 军工 | 汽车
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+输出说明:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  分析报告保存到: 股票代码-股票名称/股票代码-股票名称-分析报告-日期.md
+  对比报告保存到: 对比-代码A vs 代码B-日期.md
+  板块报告保存到: 板块-板块名称-日期.md
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
         """
     )
     parser.add_argument("--output", "-o", default=".", help="输出目录（默认当前目录）")
+    parser.add_argument("--version", "-v", action="version", version="%(prog)s 1.1.0")
 
     # 创建子命令
-    subparsers = parser.add_subparsers(dest="command", help="子命令")
+    subparsers = parser.add_subparsers(dest="command", help="可用子命令")
 
     # analyze 子命令（默认）
-    analyze_parser = subparsers.add_parser("analyze", help="分析股票（默认）")
-    analyze_parser.add_argument("codes", nargs="+", help="股票代码，如 000001 600519 00700")
+    analyze_parser = subparsers.add_parser(
+        "analyze",
+        help="分析股票（默认）",
+        description="对股票进行多维度综合分析，生成16章节的完整报告"
+    )
+    analyze_parser.add_argument(
+        "codes",
+        nargs="+",
+        help="股票代码（支持 A 股 6 位代码和港股 5 位代码）"
+    )
 
     # compare 子命令
-    compare_parser = subparsers.add_parser("compare", help="双股对比")
+    compare_parser = subparsers.add_parser(
+        "compare",
+        help="双股对比",
+        description="从7个维度横向对比两只股票：PE/PB/市值/涨跌/RSI/MACD/评级"
+    )
     compare_parser.add_argument("code_a", help="股票 A 代码")
     compare_parser.add_argument("code_b", help="股票 B 代码")
 
     # sector 子命令
-    sector_parser = subparsers.add_parser("sector", help="板块分析")
-    sector_parser.add_argument("sector", help="板块名称（白酒/新能源/半导体/银行/医药等）")
+    sector_parser = subparsers.add_parser(
+        "sector",
+        help="板块分析",
+        description="分析指定板块的代表性股票和整体趋势"
+    )
+    sector_parser.add_argument(
+        "sector",
+        help="板块名称",
+        choices=["白酒", "新能源", "半导体", "银行", "医药", "消费", "科技", "地产", "军工", "汽车"]
+    )
 
     args = parser.parse_args()
 
