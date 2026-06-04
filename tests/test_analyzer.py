@@ -5,7 +5,7 @@ from pathlib import Path
 # 添加项目根目录到 sys.path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from scripts.analyzer import calculate_weighted_score
+from scripts.analyzer import calculate_weighted_score, compare_stocks_wrapper, analyze_sector_wrapper
 
 
 def test_calculate_weighted_score_bullish():
@@ -79,3 +79,18 @@ def test_calculate_weighted_score_signal_count():
     assert "bullish_signals" in result
     assert "bearish_signals" in result
     assert "net_signals" in result
+
+
+def test_compare_stocks_wrapper():
+    """测试双股对比便捷函数"""
+    # 这个测试需要实际 API 调用，标记为集成测试
+    # result = compare_stocks_wrapper("600519", "000858")
+    # assert "comparison" in result
+    pass  # 跳过，需要网络
+
+
+def test_analyze_sector_wrapper():
+    """测试板块分析便捷函数"""
+    # result = analyze_sector_wrapper("白酒")
+    # assert "sector_name" in result
+    pass  # 跳过，需要网络

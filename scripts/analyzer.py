@@ -16,6 +16,13 @@ from .utils import _http_get, _http_get_safe
 from .technical_indicators import calculate_extended_indicators
 from .valuation_analysis import analyze_valuation_percentile
 from .industry_analysis import analyze_industry_comparison
+from .sentiment import analyze_sentiment, summarize_sentiment
+from .risk_control import (
+    calc_dynamic_stop_loss, calc_target_price,
+    calc_support_resistance, calc_position_size,
+    check_risk_rules, detect_board_type
+)
+from .comparison import compare_two_stocks, generate_comparison_table, get_sector_stocks, analyze_sector
 
 
 # ============================================================
@@ -552,7 +559,12 @@ def safe_num(v, default=0):
 # 单文件综合报告生成
 # ============================================================
 
-def generate_report(code, name, df, indicators, fund_flow, north_flow, quote, news_df, industry_df, financial_health=None, rating=None, extended_indicators=None, valuation_percentile=None, industry_comparison=None):
+def generate_report(code, name, df, indicators, fund_flow, north_flow, quote, news_df, industry_df,
+                    financial_health=None, rating=None, extended_indicators=None,
+                    valuation_percentile=None, industry_comparison=None,
+                    weighted_score=None, stop_loss=None, target=None,
+                    support_resistance=None, position=None, risk_check=None,
+                    sentiment_result=None):
     """生成单个综合分析报告"""
     L = []
     now = datetime.datetime.now().strftime('%Y-%m-%d %H:%M')
@@ -1054,6 +1066,62 @@ def generate_report(code, name, df, indicators, fund_flow, north_flow, quote, ne
         L.append(f"| 净利润增速 | {financial_health.get('净利润同比', '-')} | 财报 | 季度 |")
         L.append(f"| 资产负债率 | {financial_health.get('资产负债率', '-')} | 财报 | 季度 |")
 
+    # ── 十二、加权信号评分 ──
+    if weighted_score:
+        L.append("\n---\n## 十二、加权信号评分\n")
+        L.append(f"**综合评分：{weighted_score['score']:.2f}**（-10 到 +10）\n")
+        L.append(f"**操作方向：{weighted_score['direction']}**")
+        L.append(f"**置信度：{weighted_score['confidence']}**\n")
+
+        L.append("**信号明细：**")
+        for signal in weighted_score["signals"]:
+            L.append(f"- {signal}")
+
+        L.append(f"\n**多空统计：**")
+        L.append(f"- 看多信号：{weighted_score['bullish_signals']} 个")
+        L.append(f"- 看空信号：{weighted_score['bearish_signals']} 个")
+        L.append(f"- 净信号数：{weighted_score['net_signals']}")
+
+    # ── 十三、操作建议 ──
+    if stop_loss and target and position:
+        L.append("\n---\n## 十三、操作建议\n")
+        L.append(f"**方向：{weighted_score['direction']}**")
+        L.append(f"**仓位：{position['position_pct']}%**（{position['description']}）\n")
+
+        L.append("**止损/目标位：**")
+        L.append(f"- 止损价：{stop_loss['stop_loss']}（{stop_loss['description']}）")
+        L.append(f"- 目标价：{target['target_price']}（{target['description']}）")
+        L.append(f"- 风险收益比：1:{target['risk_reward_ratio']}")
+
+    # ── 十四、支撑压力位 ──
+    if support_resistance:
+        L.append("\n---\n## 十四、支撑压力位\n")
+
+        if support_resistance.get("resistance"):
+            L.append("**压力位：**")
+            L.append("| 价格 | 来源 |")
+            L.append("|------|------|")
+            for r in support_resistance["resistance"][:5]:
+                L.append(f"| {r['price']} | {r['source']} |")
+
+        if support_resistance.get("support"):
+            L.append("\n**支撑位：**")
+            L.append("| 价格 | 来源 |")
+            L.append("|------|------|")
+            for s in support_resistance["support"][:5]:
+                L.append(f"| {s['price']} | {s['source']} |")
+
+    # ── 十五、新闻情感分析 ──
+    if sentiment_result:
+        L.append("\n---\n## 十五、新闻情感分析\n")
+        L.append(summarize_sentiment(sentiment_result))
+
+    # ── 十六、风控提示 ──
+    if risk_check and risk_check.get("warnings"):
+        L.append("\n---\n## 十六、风控提示\n")
+        for warning in risk_check["warnings"]:
+            L.append(f"- [!] {warning}")
+
     # ── 风险提示 ──
     L.append("\n---\n## 风险提示\n")
     L.append("- 以上分析基于公开数据自动计算，仅供参考，不构成投资建议")
@@ -1080,48 +1148,86 @@ def analyze_stock(code, output_dir="."):
     out_path.mkdir(parents=True, exist_ok=True)
     print(f"  输出目录: {out_path}")
 
-    print("\n[1/10] 获取 K 线数据...")
+    print("\n[1/12] 获取 K 线数据...")
     df_hist = fetch_kline(code, days=500)
     print(f"  获取到 {len(df_hist)} 条 K 线数据")
 
-    print("[2/10] 获取实时行情...")
+    print("[2/12] 获取实时行情...")
     quote = fetch_realtime_quote(code)
 
-    print("[3/10] 获取资金流向...")
+    print("[3/12] 获取资金流向...")
     fund_flow = fetch_fund_flow(code)
 
-    print("[4/10] 获取北向资金...")
+    print("[4/12] 获取北向资金...")
     north_flow = fetch_north_flow()
 
-    print("[5/10] 获取新闻和行业数据...")
+    print("[5/12] 获取新闻和行业数据...")
     news_df = fetch_stock_news(code)
     industry_df = fetch_industry_boards()
 
-    print("[6/10] 获取财务报表数据...")
+    print("[6/12] 获取财务报表数据...")
     financial_data = fetch_financial_report(code)
 
-    print("[7/10] 计算技术指标...")
+    print("[7/12] 计算技术指标...")
     indicators = calculate_indicators(df_hist)
 
     # 计算扩展技术指标
     print("  计算扩展指标（RSI 背离、MACD 柱状图等）...")
     extended_indicators = calculate_extended_indicators(df_hist, indicators)
 
-    print("[8/10] 计算财务健康指标和投资评级...")
+    print("[8/12] 计算加权信号评分...")
+    weighted_score = calculate_weighted_score(indicators)
+
+    print("[9/12] 计算动态止损/目标位...")
+    price = indicators.get("最新价", 0)
+    board_type = detect_board_type(code)
+    stop_loss = calc_dynamic_stop_loss(
+        current_price=price,
+        atr=indicators.get("ATR14", 0),
+        board_type=board_type
+    )
+    target = calc_target_price(
+        current_price=price,
+        stop_loss=stop_loss["stop_loss"]
+    )
+
+    print("[10/12] 计算支撑压力位...")
+    support_resistance = calc_support_resistance(df_hist, price, indicators)
+
+    print("[11/12] 计算仓位建议和风控检查...")
+    position = calc_position_size(
+        direction=weighted_score["direction"],
+        score=weighted_score["score"],
+        net_signals=weighted_score["net_signals"],
+        has_bearish=weighted_score["bearish_signals"] > 0
+    )
+    risk_check = check_risk_rules(
+        code=code,
+        indicators=indicators,
+        is_st="ST" in name,
+        is_new_stock=False
+    )
+
+    print("[12/12] 分析新闻情感...")
+    sentiment_result = analyze_sentiment(news_df.to_dict("records") if not news_df.empty else [])
+
+    print("\n计算财务健康指标和投资评级...")
     financial_health = calculate_financial_health(quote, financial_data)
     rating = calculate_rating(indicators, financial_health, fund_flow)
 
-    print("[9/10] 分析估值分位数...")
+    print("分析估值分位数...")
     valuation_percentile = analyze_valuation_percentile(code, quote, years=5)
 
-    print("[10/10] 分析行业对比...")
+    print("分析行业对比...")
     industry_comparison = analyze_industry_comparison(code)
 
     print("\n生成分析报告...")
     report = generate_report(
         code, name, df_hist, indicators, fund_flow, north_flow,
         quote, news_df, industry_df, financial_health, rating,
-        extended_indicators, valuation_percentile, industry_comparison
+        extended_indicators, valuation_percentile, industry_comparison,
+        weighted_score, stop_loss, target,
+        support_resistance, position, risk_check, sentiment_result
     )
     today = datetime.date.today().strftime("%Y%m%d")
     report_file = out_path / f"{code}-{name}-分析报告-{today}.md"
@@ -1322,3 +1428,95 @@ def calculate_weighted_score(indicators: Dict[str, float]) -> Dict[str, Any]:
         "bearish_signals": bearish_count,
         "net_signals": net_signals,
     }
+
+
+# ============================================================
+# 便捷函数
+# ============================================================
+
+def compare_stocks_wrapper(code_a: str, code_b: str) -> Dict[str, Any]:
+    """
+    双股对比分析的便捷函数。
+
+    Args:
+        code_a: 股票 A 代码
+        code_b: 股票 B 代码
+
+    Returns:
+        dict: 对比分析结果
+    """
+    # 获取股票 A 数据
+    name_a = get_stock_name(code_a)
+    quote_a = fetch_realtime_quote(code_a)
+    df_a = fetch_kline(code_a, days=120)
+    indicators_a = calculate_indicators(df_a)
+    rating_a = calculate_rating(indicators_a, {}, {})
+
+    stock_a = {
+        "code": code_a,
+        "name": name_a,
+        "price": indicators_a.get("最新价", 0),
+        "pe": quote_a.get("f9", 0),
+        "pb": quote_a.get("f23", 0),
+        "market_cap": safe_num(quote_a.get("f20", 0)),
+        "change_pct": indicators_a.get("涨跌幅_今日", 0),
+        "indicators": indicators_a,
+        "rating": rating_a,
+    }
+
+    # 获取股票 B 数据
+    name_b = get_stock_name(code_b)
+    quote_b = fetch_realtime_quote(code_b)
+    df_b = fetch_kline(code_b, days=120)
+    indicators_b = calculate_indicators(df_b)
+    rating_b = calculate_rating(indicators_b, {}, {})
+
+    stock_b = {
+        "code": code_b,
+        "name": name_b,
+        "price": indicators_b.get("最新价", 0),
+        "pe": quote_b.get("f9", 0),
+        "pb": quote_b.get("f23", 0),
+        "market_cap": safe_num(quote_b.get("f20", 0)),
+        "change_pct": indicators_b.get("涨跌幅_今日", 0),
+        "indicators": indicators_b,
+        "rating": rating_b,
+    }
+
+    return compare_two_stocks(stock_a, stock_b)
+
+
+def analyze_sector_wrapper(sector_name: str) -> Dict[str, Any]:
+    """
+    板块分析的便捷函数。
+
+    Args:
+        sector_name: 板块名称
+
+    Returns:
+        dict: 板块分析结果
+    """
+    codes = get_sector_stocks(sector_name)
+    if not codes:
+        return {"error": f"未知板块: {sector_name}"}
+
+    stocks = []
+    for code in codes:
+        try:
+            name = get_stock_name(code)
+            quote = fetch_realtime_quote(code)
+            change_pct = safe_num(quote.get("f3", 0))
+            stocks.append({
+                "code": code,
+                "name": name,
+                "change_pct": change_pct,
+            })
+        except Exception:
+            continue
+
+    sector_data = {
+        "sector_name": sector_name,
+        "stocks": stocks,
+    }
+
+    return analyze_sector(sector_data)
