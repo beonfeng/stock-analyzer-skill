@@ -65,9 +65,23 @@ python stock_analyzer.py 000333 600519 300750
 
 ## 安装
 
+### 1. 克隆仓库
+
 ```bash
-pip install pandas numpy
+git clone https://github.com/beonfeng/stock-analyzer-skill.git
+cd stock-analyzer-skill
 ```
+
+### 2. 安装依赖
+
+```bash
+pip install -r requirements.txt
+```
+
+**依赖说明：**
+- `pandas` — 数据处理
+- `numpy` — 数值计算
+- Python 内置模块：`http.client`、`ssl`、`json`、`datetime` 等
 
 ## 文档
 
