@@ -159,7 +159,7 @@ description: Use when the user asks to analyze a stock, industry, or sector — 
 
 ## 使用方式
 
-### 1. 运行分析脚本
+### 1. 分析股票（默认）
 
 ```bash
 # 分析单只股票
@@ -171,7 +171,28 @@ python stock_analyzer.py 000001 600519 000858
 
 脚本自动在当前工作目录下创建 `股票代码-股票名称/` 文件夹，内含综合分析报告。
 
-### 2. AI 增强分析
+### 2. 双股对比
+
+```bash
+python stock_analyzer.py compare 600519 000858
+```
+
+### 3. 板块分析
+
+```bash
+python stock_analyzer.py sector 白酒
+```
+
+支持的板块：白酒、新能源、半导体、银行、医药、消费、科技、地产、军工、汽车
+
+### 4. 指定输出目录
+
+```bash
+python stock_analyzer.py -o ./reports 600519
+python stock_analyzer.py -o ./reports compare 600519 000858
+```
+
+### 5. AI 增强分析
 
 脚本生成基础数据报告后，Claude 读取报告文件，结合市场环境给出综合研判：
 - 趋势判断（多头/空头/震荡）
@@ -179,23 +200,9 @@ python stock_analyzer.py 000001 600519 000858
 - 资金面信号解读
 - 风险提示
 
-### 3. 双股对比和板块分析
+### 6. 报告内容
 
-通过 Python 代码调用：
-
-```python
-from scripts.analyzer import compare_stocks_wrapper, analyze_sector_wrapper
-
-# 双股对比
-result = compare_stocks_wrapper("600519", "000858")
-
-# 板块分析
-result = analyze_sector_wrapper("白酒")
-```
-
-### 4. 加权评分报告
-
-分析报告中自动包含：
+分析报告自动包含 16 个章节：
 - 加权信号评分（十二章）
 - 操作建议（十三章）
 - 支撑压力位（十四章）

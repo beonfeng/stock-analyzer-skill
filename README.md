@@ -28,13 +28,20 @@
 ### 命令行
 
 ```bash
+# 分析单只股票
 python stock_analyzer.py 000333
-```
 
-### 批量分析
-
-```bash
+# 批量分析
 python stock_analyzer.py 000333 600519 300750
+
+# 双股对比
+python stock_analyzer.py compare 600519 000858
+
+# 板块分析
+python stock_analyzer.py sector 白酒
+
+# 指定输出目录
+python stock_analyzer.py -o ./reports 600519
 ```
 
 ## 输出示例
