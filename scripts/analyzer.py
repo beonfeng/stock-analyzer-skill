@@ -121,16 +121,16 @@ def fetch_realtime_quote(code):
         return {
             "f14": data.get("f58", ""),  # 名称
             "f2": convert_field("f43"),  # 最新价
-            "f3": direct("f170"),   # 涨跌幅 -- percentage, not a price
+            "f3": direct("f170") / 100,   # 涨跌幅 -- 需要除以100
             "f9": direct("f162") / 100,   # PE -- 需要除以100
             "f23": direct("f167") / 100,  # PB -- 需要除以100
             "f20": direct("f116"),  # 总市值（元）
             "f21": direct("f117"),  # 流通市值（元）
-            "f37": direct("f173"),  # ROE（5.56→5.56%）
-            "f49": direct("f186"),  # 毛利率（25.57→25.57%）
-            "f40": direct("f183"),  # 营收同比（原始值，可能是金额）
-            "f41": direct("f185"),  # 净利润同比（2.03→2.03%）
-            "f34": direct("f188"),  # 资产负债率（60.02→60.02%）
+            "f37": direct("f173"),  # ROE（已经是百分比）
+            "f49": direct("f186"),  # 毛利率（已经是百分比）
+            "f40": direct("f183"),  # 营收（元）
+            "f41": direct("f185"),  # 净利润同比（已经是百分比）
+            "f34": direct("f188"),  # 资产负债率（已经是百分比）
             "market": market_code,  # 市场类型
         }
     return {"market": market_code}
