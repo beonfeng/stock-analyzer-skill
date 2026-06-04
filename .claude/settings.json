@@ -1,7 +1,8 @@
 {
   "permissions": {
     "allow": [
-      "Edit(~/.claude/skills/stock-analyzer/**)"
+      "Edit(~/.claude/skills/stock-analyzer/**)",
+      "Bash(python -c ' *)"
     ]
   }
 }

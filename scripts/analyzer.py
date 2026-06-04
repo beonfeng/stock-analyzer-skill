@@ -122,8 +122,8 @@ def fetch_realtime_quote(code):
             "f14": data.get("f58", ""),  # 名称
             "f2": convert_field("f43"),  # 最新价
             "f3": direct("f170"),   # 涨跌幅 -- percentage, not a price
-            "f9": direct("f162"),   # PE -- ratio, not a price
-            "f23": direct("f167"),  # PB -- ratio, not a price
+            "f9": direct("f162") / 100,   # PE -- 需要除以100
+            "f23": direct("f167") / 100,  # PB -- 需要除以100
             "f20": direct("f116"),  # 总市值（元）
             "f21": direct("f117"),  # 流通市值（元）
             "f37": direct("f173"),  # ROE（5.56→5.56%）
