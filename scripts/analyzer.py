@@ -1143,8 +1143,7 @@ def analyze_stock(code, output_dir="."):
     name = get_stock_name(code)
     print(f"  股票名称: {name}")
 
-    dir_name = f"{code}-{name}"
-    out_path = Path(output_dir) / dir_name
+    out_path = Path(output_dir) / "分析报告"
     out_path.mkdir(parents=True, exist_ok=True)
     print(f"  输出目录: {out_path}")
 

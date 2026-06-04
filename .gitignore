@@ -24,23 +24,5 @@ Thumbs.db
 # Output
 *.md.backup
 
-# 分析报告输出目录（格式：股票代码-股票名称/）
-*-*/
-# 但保留 examples 目录
-!examples/
-!examples/*/
-# 保留 docs 目录
-!docs/
-!docs/*/
-# 保留 templates 目录
-!templates/
-!templates/*/
-# 保留 references 目录
-!references/
-!references/*/
-# 保留 sponsor 目录
-!sponsor/
-!sponsor/*/
-# 保留 .github 目录
-!.github/
-!.github/*/
+# 分析报告输出目录
+分析报告/

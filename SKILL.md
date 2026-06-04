@@ -68,7 +68,7 @@ description: Use when the user asks to analyze a stock, industry, or sector — 
 5. 计算仓位建议 + 风控检查 + 新闻情感分析
   ↓
 6. 生成综合分析报告 (单文件):
-   └── 股票代码-股票名称/
+   └── 分析报告/
        └── 股票代码-股票名称-分析报告-YYYYMMDD.md
 ```
 
