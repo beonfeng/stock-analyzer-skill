@@ -3,7 +3,15 @@
     "allow": [
       "Edit(~/.claude/skills/stock-analyzer/**)",
       "Bash(python -c ' *)",
-      "Edit(~/.claude/skills/stock-analyzer-skill/**)"
+      "Edit(~/.claude/skills/stock-analyzer-skill/**)",
+      "Bash(cp \"分析报告/000333-美的集团-分析报告-20260604.md\" examples/)",
+      "Bash(cp \"分析报告/002594-比亚迪-分析报告-20260604.md\" examples/)",
+      "Bash(cp \"分析报告/300750-宁德时代-分析报告-20260604.md\" examples/)",
+      "Bash(cp \"分析报告/600519-贵州茅台-分析报告-20260604.md\" examples/)",
+      "Bash(cd \"c:/Users/risky/.claude/skills/stock-analyzer-skill\" && rm -f examples/002594-比亚迪-完整报告.md examples/300750-宁德时代.md examples/600519-贵州茅台.md && ls -la examples/*.md)"
+    ],
+    "additionalDirectories": [
+      "c:\\Users\\risky\\.claude\\skills\\stock-analyzer-skill\\examples"
     ]
   }
 }
