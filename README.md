@@ -46,10 +46,20 @@ python stock_analyzer.py 000333 600519 300750
 └── 000333-美的集团-分析报告-20260604.md
 ```
 
-**示例报告：**
+### 单股分析
+
+- [600519-贵州茅台](examples/600519-贵州茅台.md) — 完整 16 章节报告
+- [002594-比亚迪](examples/002594-比亚迪-完整报告.md) — 完整版（含所有新增功能）
 - [000333-美的集团](examples/000333-美的集团.md)
-- [600519-贵州茅台](examples/600519-贵州茅台.md)
 - [300750-宁德时代](examples/300750-宁德时代.md)
+
+### 双股对比
+
+- [茅台 vs 五粮液](examples/compare-茅台vs五粮液.md) — 7 维度横向对比
+
+### 板块分析
+
+- [白酒板块](examples/sector-白酒板块.md) — 5 只代表性股票汇总分析
 
 **报告模板：** [templates/report-template.md](templates/report-template.md)
 
