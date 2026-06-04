@@ -230,3 +230,117 @@ def calc_support_resistance(
         "resistance": resistance[:5],  # 最多 5 个压力位
         "support": support[:5],        # 最多 5 个支撑位
     }
+
+
+def calc_position_size(
+    direction: str,
+    score: float,
+    net_signals: int,
+    has_bearish: bool
+) -> Dict[str, Any]:
+    """
+    计算仓位建议。
+
+    Args:
+        direction: 操作方向 ('buy' / 'sell' / 'hold')
+        score: 技术面评分
+        net_signals: 净信号数（看多信号数 - 看空信号数）
+        has_bearish: 是否存在看空信号
+
+    Returns:
+        dict: {
+            'position_pct': int,
+            'confidence': str,
+            'description': str
+        }
+    """
+    if direction == "sell" or score <= -5:
+        return {
+            "position_pct": 0,
+            "confidence": "较高" if score <= -5 else "中等",
+            "description": "建议空仓，等待企稳信号",
+        }
+
+    if direction == "hold" or (score < 3) or has_bearish:
+        return {
+            "position_pct": 0,
+            "confidence": "较低",
+            "description": "建议观望，信号不明确或存在矛盾",
+        }
+
+    # 买入信号
+    if score >= 5 and not has_bearish and net_signals >= 2:
+        return {
+            "position_pct": 15,
+            "confidence": "较高",
+            "description": "建议仓位 10-20%，信号较强",
+        }
+
+    if score >= 3 and not has_bearish and net_signals >= 1:
+        return {
+            "position_pct": 8,
+            "confidence": "中等",
+            "description": "建议仓位 5-10%，信号中等",
+        }
+
+    return {
+        "position_pct": 0,
+        "confidence": "较低",
+        "description": "建议观望，信号不足",
+    }
+
+
+def check_risk_rules(
+    code: str,
+    indicators: Dict[str, float],
+    is_st: bool = False,
+    is_new_stock: bool = False
+) -> Dict[str, Any]:
+    """
+    执行风控铁律检查。
+
+    Args:
+        code: 股票代码
+        indicators: 技术指标字典
+        is_st: 是否为 ST 股票
+        is_new_stock: 是否为次新股
+
+    Returns:
+        dict: {
+            'warnings': list,
+            'blocked': bool
+        }
+    """
+    warnings = []
+    price = indicators.get("最新价", 0)
+    ma20 = indicators.get("MA20", 0)
+    ma5 = indicators.get("MA5", 0)
+    ma10 = indicators.get("MA10", 0)
+
+    # 1. 乖离率检查（价格偏离 MA20 > 5%）
+    if ma20 > 0 and price > 0:
+        bias = (price - ma20) / ma20 * 100
+        if bias > 5:
+            warnings.append(f"乖离率 {bias:.1f}% > 5%，不建议追高")
+        elif bias < -5:
+            warnings.append(f"乖离率 {bias:.1f}% < -5%，超卖区域")
+
+    # 2. 均线间距检查（间距 < 1% 不认定为有效排列）
+    if ma5 > 0 and ma10 > 0 and ma20 > 0:
+        gap_5_10 = abs(ma5 - ma10) / ma10 * 100
+        gap_10_20 = abs(ma10 - ma20) / ma20 * 100
+        if gap_5_10 < 1 and gap_10_20 < 1:
+            warnings.append("均线间距过小（<1%），不认定为有效排列")
+
+    # 3. ST 股票警告
+    if is_st:
+        warnings.append("该股票为 ST/*ST，存在退市风险，请特别注意")
+
+    # 4. 次新股警告
+    if is_new_stock:
+        warnings.append("该股票为次新股（上市不足 1 年），波动较大，请注意风险")
+
+    return {
+        "warnings": warnings,
+        "blocked": is_st,  # ST 股票标记为高风险
+    }

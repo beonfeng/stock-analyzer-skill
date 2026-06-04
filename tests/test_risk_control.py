@@ -2,7 +2,7 @@ import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent / "scripts"))
 
-from risk_control import calc_dynamic_stop_loss, calc_target_price, calc_support_resistance
+from risk_control import calc_dynamic_stop_loss, calc_target_price, calc_support_resistance, calc_position_size, check_risk_rules
 
 
 def test_calc_dynamic_stop_loss_main_board():
@@ -75,3 +75,98 @@ def test_calc_support_resistance():
     # 支撑位应低于当前价
     for s in result["support"]:
         assert s["price"] < 108.0
+
+
+def test_calc_position_size_buy_high_confidence():
+    """测试高置信度买入的仓位建议"""
+    result = calc_position_size(
+        direction="buy",
+        score=6.0,
+        net_signals=3,
+        has_bearish=False
+    )
+    assert result["position_pct"] >= 10
+    assert result["position_pct"] <= 20
+    assert result["confidence"] == "较高"
+
+
+def test_calc_position_size_sell():
+    """测试卖出信号的仓位建议"""
+    result = calc_position_size(
+        direction="sell",
+        score=-5.0,
+        net_signals=-3,
+        has_bearish=True
+    )
+    assert result["position_pct"] == 0
+    assert "空仓" in result["description"]
+
+
+def test_calc_position_size_hold():
+    """测试观望信号的仓位建议"""
+    result = calc_position_size(
+        direction="hold",
+        score=1.0,
+        net_signals=0,
+        has_bearish=False
+    )
+    assert result["position_pct"] == 0
+    assert "观望" in result["description"]
+
+
+def test_check_risk_rules_normal():
+    """测试正常情况下的风控检查"""
+    indicators = {
+        "最新价": 100.0,
+        "MA20": 97.0,
+        "MA5": 100.5,
+        "MA10": 99.0,
+    }
+    result = check_risk_rules(
+        code="600519",
+        indicators=indicators,
+        is_st=False,
+        is_new_stock=False
+    )
+    assert len(result["warnings"]) == 0
+
+
+def test_check_risk_rules_high_bias():
+    """测试乖离率过高的风控警告"""
+    indicators = {
+        "最新价": 120.0,  # 偏离 MA20 超过 5%
+        "MA20": 100.0,
+        "MA5": 115.0,
+        "MA10": 110.0,
+    }
+    result = check_risk_rules(
+        code="600519",
+        indicators=indicators,
+        is_st=False,
+        is_new_stock=False
+    )
+    assert any("乖离率" in w for w in result["warnings"])
+
+
+def test_check_risk_rules_st_stock():
+    """测试 ST 股票的风控警告"""
+    indicators = {"最新价": 10.0, "MA20": 9.5, "MA5": 9.8, "MA10": 9.6}
+    result = check_risk_rules(
+        code="000001",
+        indicators=indicators,
+        is_st=True,
+        is_new_stock=False
+    )
+    assert any("ST" in w for w in result["warnings"])
+
+
+def test_check_risk_rules_new_stock():
+    """测试次新股的风控警告"""
+    indicators = {"最新价": 50.0, "MA20": 48.0, "MA5": 49.0, "MA10": 48.5}
+    result = check_risk_rules(
+        code="301001",
+        indicators=indicators,
+        is_st=False,
+        is_new_stock=True
+    )
+    assert any("次新股" in w for w in result["warnings"])
