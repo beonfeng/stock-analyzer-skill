@@ -312,22 +312,30 @@ def resolve_stock_code(input_str):
 
     Returns:
         str: 股票代码
+
+    Raises:
+        ValueError: 输入为空或无法识别
     """
     input_str = input_str.strip()
+
+    # 空输入检查
+    if not input_str:
+        raise ValueError("股票代码或名称不能为空")
 
     # 如果是纯数字，直接返回
     if input_str.isdigit():
         return input_str
 
-    # 尝试从名称映射中查找
+    # 尝试从名称映射中查找（精确匹配）
     code = _NAME_TO_CODE.get(input_str)
     if code:
         return code
 
-    # 模糊匹配（包含关系）
-    for name, code in _NAME_TO_CODE.items():
-        if input_str in name or name in input_str:
-            return code
+    # 模糊匹配（包含关系，但输入不能为空且至少2个字符）
+    if len(input_str) >= 2:
+        for name, code in _NAME_TO_CODE.items():
+            if input_str in name or name in input_str:
+                return code
 
     # 如果都找不到，返回原值（让后续处理报错）
     return input_str
