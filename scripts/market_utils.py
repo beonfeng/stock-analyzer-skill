@@ -49,7 +49,7 @@ def get_market_info(code):
     if len(code) == 6 and code.isdigit():
         if code.startswith('6'):
             return ('SH', 1, 100)
-        elif code[0] in '03':
+        elif code[0] in '031':
             return ('SZ', 0, 100)
 
     raise ValueError(f"无法识别的股票代码格式: {code}")
