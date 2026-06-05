@@ -15,7 +15,9 @@
       "Bash(python stock_analyzer.py compare 600519 000858)",
       "Bash(python -c \"from scripts.analyzer import fetch_kline; df = fetch_kline\\('000333', days=10\\); print\\(f'获取到 {len\\(df\\)} 条数据'\\)\")",
       "Bash(cp \"对比-贵州茅台vs五 粮 液-20260605.md\" examples/compare-茅台vs五粮液.md)",
-      "Bash(cp \"板块-白酒-20260605.md\" examples/sector-白酒板块.md)"
+      "Bash(cp \"板块-白酒-20260605.md\" examples/sector-白酒板块.md)",
+      "Bash(python stock_analyzer.py 000636)",
+      "Bash(python stock_analyzer.py 000333 300302 000636)"
     ],
     "additionalDirectories": [
       "c:\\Users\\risky\\.claude\\skills\\stock-analyzer-skill\\examples"
