@@ -176,9 +176,8 @@ def generate_enhanced_comparison_report(stock_a, stock_b, result):
 
     # 风险提示
     L.append("\n## 风险提示\n")
-    L.append("- 以上分析基于公开数据自动计算，仅供参考，不构成投资建议")
+    L.append("- 以上分析基于公开数据自动计算，请结合自身风险承受能力做出投资决策")
     L.append("- 股市有风险，投资需谨慎")
-    L.append("- 请结合自身风险承受能力做出投资决策")
 
     return "\n".join(L)
 
@@ -318,7 +317,7 @@ def generate_enhanced_sector_report(sector_name, stocks_data, result):
 
     # 风险提示
     L.append("\n## 风险提示\n")
-    L.append("- 以上分析基于公开数据自动计算，仅供参考，不构成投资建议")
+    L.append("- 以上分析基于公开数据自动计算，请结合自身风险承受能力做出投资决策")
     L.append("- 板块分析基于代表性股票，不能完全代表整个板块")
     L.append("- 股市有风险，投资需谨慎")
 

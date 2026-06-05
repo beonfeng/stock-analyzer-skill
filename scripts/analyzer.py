@@ -1165,8 +1165,8 @@ def generate_report(code, name, df, indicators, fund_flow, north_flow, quote, ne
 
     # ── 风险提示 ──
     L.append("\n---\n## 风险提示\n")
-    L.append("- 以上分析基于公开数据自动计算，仅供参考，不构成投资建议")
-    L.append("- 技术指标存在滞后性，请结合基本面和市场环境综合判断")
+    L.append("- 以上分析基于公开数据自动计算，请结合基本面和市场环境综合判断")
+    L.append("- 技术指标存在滞后性，请结合自身风险承受能力做出投资决策")
     L.append("- 股市有风险，投资需谨慎")
 
     return "\n".join(L)
