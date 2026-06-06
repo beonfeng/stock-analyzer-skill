@@ -15,7 +15,7 @@
 
 import numpy as np
 
-from .utils import _http_get_safe
+from .utils import _http_get_safe, safe_num as _safe_float
 from .market_utils import get_market_info, get_secid
 
 
@@ -173,16 +173,6 @@ def fetch_historical_valuation(code, years=5):
     # 由于 API 限制，K 线数据不直接包含 PE/PB 历史序列
     # 返回空的估值列表，调用方应使用当前快照数据进行有限分析
     return result
-
-
-def _safe_float(v, default=0):
-    """安全转换为浮点数"""
-    if v is None or v == "-" or v == "":
-        return default
-    try:
-        return float(v)
-    except (ValueError, TypeError):
-        return default
 
 
 def analyze_valuation_percentile(code, current_quote, years=5):

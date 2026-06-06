@@ -411,7 +411,8 @@ def calculate_extended_indicators(df, indicators):
     delta = close.diff()
     gain = delta.where(delta > 0, 0).rolling(6).mean()
     loss = (-delta.where(delta < 0, 0)).rolling(6).mean()
-    rs = gain / loss
+    loss_safe = loss.replace(0, 1e-10)  # 避免除零
+    rs = gain / loss_safe
     rsi_series = 100 - 100 / (1 + rs)
     result['RSI背离'] = detect_rsi_divergence(close, rsi_series, lookback=20)
 

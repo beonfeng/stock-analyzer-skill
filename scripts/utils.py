@@ -24,6 +24,25 @@ from urllib.parse import urlencode
 _ssl_ctx = ssl.create_default_context()
 
 
+def safe_num(v, default=0):
+    """
+    安全转换为浮点数，None/非数值返回默认值。
+
+    Args:
+        v: 待转换的值
+        default: 转换失败时的默认值
+
+    Returns:
+        float
+    """
+    if v is None or v == "-" or v == "":
+        return default
+    try:
+        return float(v)
+    except (ValueError, TypeError):
+        return default
+
+
 def _http_get(host, path, params=None, timeout=15, retries=8):
     """直连 HTTPS GET，绕过系统代理，自动重试"""
     url = path

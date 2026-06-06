@@ -56,8 +56,8 @@ def parse_counter_evidence(content: str) -> List[Dict[str, Any]]:
       - direction: 方向 (bullish / bearish)，表示该条件触发意味着什么
       - params: 附带参数（如均线值）
     """
-    # 定位反证清单章节
-    header_pattern = r"##\s*(?:十[一二三四五六七八九]|[一二三四五六七八九十]+)[、.]\s*反证清单"
+    # 定位反证清单章节（标题可能带有后缀如"与跟踪因子"）
+    header_pattern = r"##\s*(?:十[一二三四五六七八九]|[一二三四五六七八九十]+)[、.]\s*反证清单.*"
     match = re.search(header_pattern, content)
     if not match:
         return []

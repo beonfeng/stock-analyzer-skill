@@ -179,6 +179,8 @@ def calc_support_resistance(
             support.append({"price": round(ma_val, 2), "source": ma_key})
 
     # 3. 近期高低点
+    high_20 = 0
+    low_20 = 0
     if len(df) >= 20:
         recent_20 = df.tail(20)
         high_20 = recent_20["最高"].max()
@@ -200,7 +202,7 @@ def calc_support_resistance(
             support.append({"price": round(low_60, 2), "source": "60日最低"})
 
     # 4. 斐波那契回撤（基于近期高低点）
-    if len(df) >= 20:
+    if len(df) >= 20 and high_20 > low_20:
         swing_high = high_20
         swing_low = low_20
         fib_range = swing_high - swing_low

@@ -21,6 +21,8 @@ from scripts.analyzer import (
     fetch_kline,
     calculate_indicators,
     fetch_fund_flow,
+    calculate_financial_health,
+    calculate_rating,
     get_stock_name,
     safe_num,
 )
@@ -85,6 +87,8 @@ def cmd_compare(args):
         df_a = fetch_kline(code_a, days=120)
         indicators_a = calculate_indicators(df_a)
         fund_flow_a = fetch_fund_flow(code_a)
+        financial_health_a = calculate_financial_health(quote_a, {})
+        rating_a = calculate_rating(indicators_a, financial_health_a, fund_flow_a)
 
         # 获取股票 B 数据
         name_b = get_stock_name(code_b)
@@ -92,6 +96,8 @@ def cmd_compare(args):
         df_b = fetch_kline(code_b, days=120)
         indicators_b = calculate_indicators(df_b)
         fund_flow_b = fetch_fund_flow(code_b)
+        financial_health_b = calculate_financial_health(quote_b, {})
+        rating_b = calculate_rating(indicators_b, financial_health_b, fund_flow_b)
 
         # 构建对比数据
         stock_a = {
@@ -105,6 +111,7 @@ def cmd_compare(args):
             "indicators": indicators_a,
             "fund_flow": fund_flow_a,
             "quote": quote_a,
+            "rating": rating_a,
         }
 
         stock_b = {
@@ -118,6 +125,7 @@ def cmd_compare(args):
             "indicators": indicators_b,
             "fund_flow": fund_flow_b,
             "quote": quote_b,
+            "rating": rating_b,
         }
 
         # 执行对比

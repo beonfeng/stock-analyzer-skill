@@ -17,30 +17,11 @@
 - market_utils 中的 get_market_info、get_secid
 """
 
-from .utils import _http_get_safe
+from .utils import _http_get_safe, safe_num as _safe_float
 from .market_utils import get_market_info, get_secid
 
 # API 常量
 UT_TOKEN = "bd1d9ddb04089700cf9c27f6f7426281"
-
-
-def _safe_float(v, default=0):
-    """
-    安全转换为浮点数。
-
-    Args:
-        v: 待转换的值
-        default: 转换失败时的默认值
-
-    Returns:
-        float: 转换后的浮点数
-    """
-    if v is None or v == "-" or v == "":
-        return default
-    try:
-        return float(v)
-    except (ValueError, TypeError):
-        return default
 
 
 def get_stock_industry(code):

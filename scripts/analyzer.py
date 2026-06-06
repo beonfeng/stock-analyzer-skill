@@ -12,7 +12,7 @@ import pandas as pd
 import numpy as np
 
 from .market_utils import get_market_info, convert_price, is_hk_stock, is_us_stock, get_secid
-from .utils import _http_get, _http_get_safe
+from .utils import _http_get, _http_get_safe, safe_num
 from .technical_indicators import calculate_extended_indicators
 from .valuation_analysis import analyze_valuation_percentile
 from .industry_analysis import analyze_industry_comparison
@@ -101,22 +101,13 @@ def fetch_realtime_quote(code):
     if j2 and j2.get("data"):
         data = j2["data"]
 
-        def safe_float(v, default=0):
-            """安全转换为浮点数"""
-            if v is None or v == "-":
-                return default
-            try:
-                return float(v)
-            except (ValueError, TypeError):
-                return default
-
         def convert_field(field):
             """使用 convert_price 转换价格字段"""
             return convert_price(data.get(field), market_code)
 
         def direct(field):
             """获取直接可用的字段"""
-            return safe_float(data.get(field, 0))
+            return safe_num(data.get(field, 0))
 
         # PE：美股 f162 可能为 '-'，用 f92 作为备选
         pe_raw = data.get("f162", "-")
@@ -132,7 +123,7 @@ def fetch_realtime_quote(code):
         return {
             "f14": data.get("f58", ""),  # 名称
             "f2": convert_field("f43"),  # 最新价
-            "f3": direct("f170") / 100,   # 涨跌幅 -- 需要除以100
+            "f3": direct("f170") / 100,   # 涨跌幅（API 返回基点值，如 314 = 3.14%，需除以 100）
             "f9": pe,   # PE
             "f23": pb,  # PB
             "f20": direct("f116"),  # 总市值（元）
@@ -148,23 +139,33 @@ def fetch_realtime_quote(code):
 
 
 def fetch_fund_flow(code):
-    """获取个股资金流向"""
-    result = {}
-    indicator_map = {"今日": "f62", "3日": "f267", "5日": "f164", "10日": "f174"}
-    for label, fid in indicator_map.items():
-        params = {
-            "fid": fid, "po": "1", "pz": "5000", "pn": "1", "np": "1",
-            "fltt": "2", "invt": "2",
-            "ut": "b2884a393a59ad64002292a3e90d46a5",
-            "fs": "m:0+t:6+f:!2,m:0+t:13+f:!2,m:0+t:80+f:!2,m:1+t:2+f:!2,m:1+t:23+f:!2,m:0+t:7+f:!2,m:1+t:3+f:!2",
-            "fields": "f12,f14,f2,f3,f62,f184,f66,f69,f72,f75,f78,f81,f84,f87,f124",
-        }
-        j = _http_get_safe("push2.eastmoney.com", "/api/qt/clist/get", params)
-        items = j.get("data", {}).get("diff", []) if j else []
-        for item in items:
-            if str(item.get("f12", "")) == code:
-                result[label] = item
-                break
+    """获取个股资金流向（单次请求获取所有周期）"""
+    _, market_id, _ = get_market_info(code)
+    params = {
+        "secid": get_secid(code, market_id),
+        "ut": "7eea3edcaed734bea9cbfc24409ed989",
+        "fields": "f62,f184,f66,f69,f72,f75,f78,f81,f84,f87,f124,f267,f164,f174",
+    }
+    j = _http_get_safe("push2.eastmoney.com", "/api/qt/stock/get", params)
+    if not j or not j.get("data"):
+        return {}
+    data = j["data"]
+    # 今日的详细数据（含超大单/大单/中单/小单拆分）
+    today_data = {
+        "f62": data.get("f62", 0),   # 今日主力净流入
+        "f184": data.get("f184", 0), # 今日主力净流入占比
+        "f66": data.get("f66", 0), "f69": data.get("f69", 0),   # 超大单
+        "f72": data.get("f72", 0), "f75": data.get("f75", 0),   # 大单
+        "f78": data.get("f78", 0), "f81": data.get("f81", 0),   # 中单
+        "f84": data.get("f84", 0), "f87": data.get("f87", 0),   # 小单
+    }
+    # 多周期仅返回主力净流入（API 仅提供汇总值）
+    result = {
+        "今日": today_data,
+        "3日": {"f62": data.get("f267", 0)},
+        "5日": {"f62": data.get("f164", 0)},
+        "10日": {"f62": data.get("f174", 0)},
+    }
     return result
 
 
@@ -417,7 +418,7 @@ def calculate_indicators(df):
     # KDJ
     low_min = low.rolling(9).min()
     high_max = high.rolling(9).max()
-    rsv = (close - low_min) / (high_max - low_min) * 100
+    rsv = (close - low_min) / (high_max - low_min).replace(0, 1e-10) * 100  # 避免除零
     k = rsv.ewm(com=2, adjust=False).mean()
     d = k.ewm(com=2, adjust=False).mean()
     indicators["K"] = k.iloc[-1]
@@ -429,7 +430,8 @@ def calculate_indicators(df):
         delta = close.diff()
         gain = delta.where(delta > 0, 0).rolling(period).mean()
         loss = (-delta.where(delta < 0, 0)).rolling(period).mean()
-        rs = gain / loss
+        loss_safe = loss.replace(0, 1e-10)  # 避免除零
+        rs = gain / loss_safe
         indicators[f"RSI{period}"] = (100 - 100 / (1 + rs)).iloc[-1]
 
     # 布林带
@@ -448,6 +450,9 @@ def calculate_indicators(df):
     for period in [5, 10, 20]:
         if len(volume) >= period:
             indicators[f"VOL_MA{period}"] = volume.rolling(period).mean().iloc[-1]
+
+    # 原始成交量（供量价分析使用）
+    indicators["成交量"] = volume.iloc[-1]
 
     # 涨跌幅统计
     indicators["最新价"] = close.iloc[-1]
@@ -600,11 +605,6 @@ def fmt_pct(n):
     if pd.isna(n) or n == "-": return "-"
     return f"{n:.2f}%"
 
-def safe_num(v, default=0):
-    try:
-        return float(v)
-    except (ValueError, TypeError):
-        return default
 
 
 # ============================================================
@@ -1272,10 +1272,12 @@ def analyze_stock(code, output_dir="."):
         net_signals=weighted_score["net_signals"],
         has_bearish=weighted_score["bearish_signals"] > 0
     )
+    # 根据股票名称判断是否为 ST 股票
+    is_st = "ST" in name.upper() if name else False
     risk_check = check_risk_rules(
         code=code,
         indicators=indicators,
-        is_st=False,  # 美股无 ST 概念
+        is_st=is_st,
         is_new_stock=False
     )
 
