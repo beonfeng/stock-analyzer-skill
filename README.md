@@ -58,8 +58,15 @@
 ### Claude Code（推荐）
 
 ```text
+# 单股分析（支持代码或中文名称）
 /stock-analyzer-skill 000333
 /stock-analyzer-skill 美的集团
+
+# 批量分析
+/stock-analyzer-skill 贵州茅台 五粮液
+
+# 板块分析（白酒/新能源/半导体/银行/医药/消费/科技/地产/军工/汽车）
+/stock-analyzer-skill 白酒
 ```
 
 ### 命令行

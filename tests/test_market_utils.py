@@ -91,10 +91,12 @@ class TestGetMarketInfo:
         with pytest.raises(ValueError, match="无法识别"):
             get_market_info('1234567')
 
-    def test_invalid_code_letters(self):
-        """测试包含字母的代码"""
-        with pytest.raises(ValueError, match="无法识别"):
-            get_market_info('AAPL')
+    def test_us_stock_code(self):
+        """测试美股代码（包含字母）"""
+        market_code, market_id, divisor = get_market_info('AAPL')
+        assert market_code == 'US'
+        assert market_id == 105
+        assert divisor == 1000
 
     def test_invalid_code_empty(self):
         """测试空字符串"""

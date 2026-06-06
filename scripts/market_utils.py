@@ -7,12 +7,16 @@
 - 港股 (HK)：5 位数字代码，如 00700、09988
 - 上海 A 股 (SH)：6 开头的 6 位代码，如 600519
 - 深圳 A 股 (SZ)：0 或 3 开头的 6 位代码，如 000001、300750
+- 美股 (US)：包含字母的代码，如 AAPL、TSLA、BRK.B
 
 东方财富 API 市场 ID：
 - 港股：116
 - 上海：1
 - 深圳：0
+- 美股：不适用（使用 yfinance）
 """
+
+import re
 
 
 def get_market_info(code):
@@ -24,9 +28,9 @@ def get_market_info(code):
 
     Returns:
         tuple: (market_code, market_id, price_divisor)
-            - market_code: 市场代码，'HK'/'SH'/'SZ'
-            - market_id: 东方财富 API 市场 ID，116/1/0
-            - price_divisor: 价格除数，1000/100
+            - market_code: 市场代码，'HK'/'SH'/'SZ'/'US'
+            - market_id: 东方财富 API 市场 ID，116/1/0/None
+            - price_divisor: 价格除数，1000/100/1
 
     Raises:
         ValueError: 无法识别的股票代码格式
@@ -38,8 +42,14 @@ def get_market_info(code):
         ('SH', 1, 100)
         >>> get_market_info('000001')
         ('SZ', 0, 100)
+        >>> get_market_info('AAPL')
+        ('US', None, 1)
     """
     code = str(code).strip()
+
+    # 美股：包含字母的代码（如 AAPL、TSLA、BRK.B）
+    if re.search(r'[A-Za-z]', code):
+        return ('US', 105, 1000)
 
     # 港股：5 位数字
     if len(code) == 5 and code.isdigit():
@@ -61,7 +71,7 @@ def convert_price(raw_price, market):
 
     Args:
         raw_price: 原始价格值（可能是数字、字符串、None 或 '-'）
-        market: 市场代码，'HK'/'SH'/'SZ'
+        market: 市场代码，'HK'/'SH'/'SZ'/'US'
 
     Returns:
         float: 转换后的价格（浮点数），异常值返回 0.0 而非抛异常
@@ -87,7 +97,7 @@ def convert_price(raw_price, market):
         return 0.0
 
     # 根据市场类型除以对应除数
-    divisors = {'HK': 1000, 'SH': 100, 'SZ': 100}
+    divisors = {'HK': 1000, 'SH': 100, 'SZ': 100, 'US': 1000}
     if market not in divisors:
         raise ValueError(f"无效的市场类型: {market}")
     return price / divisors[market]
@@ -112,6 +122,29 @@ def is_hk_stock(code):
     try:
         market_code, _, _ = get_market_info(code)
         return market_code == 'HK'
+    except ValueError:
+        return False
+
+
+def is_us_stock(code):
+    """
+    判断是否为美股。
+
+    Args:
+        code: 股票代码（字符串）
+
+    Returns:
+        bool: 是美股返回 True，否则返回 False
+
+    Examples:
+        >>> is_us_stock('AAPL')
+        True
+        >>> is_us_stock('600519')
+        False
+    """
+    try:
+        market_code, _, _ = get_market_info(code)
+        return market_code == 'US'
     except ValueError:
         return False
 

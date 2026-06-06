@@ -7,6 +7,7 @@
   python stock_analyzer.py 000001 600519           # 分析股票
   python stock_analyzer.py compare 600519 000858   # 双股对比
   python stock_analyzer.py sector 白酒             # 板块分析
+  python stock_analyzer.py monitor                 # 反证清单监控
 """
 
 import argparse
@@ -24,16 +25,44 @@ from scripts.analyzer import (
     safe_num,
 )
 from scripts.comparison import generate_comparison_table, compare_two_stocks, get_sector_stocks, analyze_sector
+from scripts.monitor import monitor_reports, format_monitor_report
+from scripts.exporter import md_to_html, md_to_pdf, HAS_MARKDOWN, HAS_WEASYPRINT
+from scripts.market_utils import is_us_stock
+
+
+def _export_report(report_path: str, fmt: str):
+    """根据格式导出报告（HTML/PDF）"""
+    from pathlib import Path
+    p = Path(report_path)
+    md_content = p.read_text(encoding="utf-8")
+    title = p.stem  # 文件名作为标题
+
+    if fmt == "html":
+        html_content = md_to_html(md_content, title)
+        html_path = p.with_suffix(".html")
+        html_path.write_text(html_content, encoding="utf-8")
+        print(f"  [HTML] {html_path.name}")
+        return str(html_path)
+    elif fmt == "pdf":
+        pdf_path = p.with_suffix(".pdf")
+        actual_path = md_to_pdf(md_content, str(pdf_path), title)
+        print(f"  [{'PDF' if actual_path.endswith('.pdf') else 'HTML降级'}] {Path(actual_path).name}")
+        return actual_path
+    return report_path
 
 
 def cmd_analyze(args):
     """分析股票"""
+    fmt = getattr(args, "format", "md") or "md"
     for code in args.codes:
         code = code.strip()
         # 支持股票名称输入，自动转换为代码
         code = resolve_stock_code(code)
         try:
-            analyze_stock(code, args.output)
+            report_path = analyze_stock(code, args.output)
+            # 导出 HTML/PDF
+            if fmt != "md" and report_path:
+                _export_report(report_path, fmt)
         except Exception as e:
             print(f"\n分析 {code} 时出错: {e}")
             traceback.print_exc()
@@ -108,6 +137,11 @@ def cmd_compare(args):
             filepath = Path(args.output) / filename
             filepath.write_text(report, encoding="utf-8")
             print(f"\n报告已保存: {filepath}")
+
+            # 导出 HTML/PDF
+            fmt = getattr(args, "format", "md") or "md"
+            if fmt != "md":
+                _export_report(str(filepath), fmt)
 
     except Exception as e:
         print(f"\n对比分析时出错: {e}")
@@ -253,8 +287,51 @@ def cmd_sector(args):
             filepath.write_text(report, encoding="utf-8")
             print(f"\n报告已保存: {filepath}")
 
+            # 导出 HTML/PDF
+            fmt = getattr(args, "format", "md") or "md"
+            if fmt != "md":
+                _export_report(str(filepath), fmt)
+
     except Exception as e:
         print(f"\n板块分析时出错: {e}")
+        traceback.print_exc()
+
+
+def cmd_monitor(args):
+    """反证清单监控"""
+    report_dir = args.report_dir
+    codes = args.codes if args.codes else None
+    days = args.days
+
+    print(f"\n{'='*60}")
+    print(f"  反证清单监控")
+    print(f"{'='*60}")
+    print(f"  报告目录: {report_dir}")
+    if codes:
+        print(f"  股票过滤: {', '.join(codes)}")
+    if days:
+        print(f"  时间范围: 最近 {days} 天")
+    print()
+
+    try:
+        data = monitor_reports(report_dir, codes, days)
+
+        # 终端输出用 ASCII 兼容版本（避免 Windows GBK 编码问题）
+        report_safe = format_monitor_report(data, use_emoji=False)
+        print(report_safe)
+
+        # 保存完整 emoji 版本到文件
+        if args.output:
+            from pathlib import Path
+            report_full = format_monitor_report(data, use_emoji=True)
+            today = datetime.date.today().strftime("%Y%m%d")
+            filename = f"监控报告-{today}.md"
+            filepath = Path(args.output) / filename
+            filepath.write_text(report_full, encoding="utf-8")
+            print(f"\n监控报告已保存: {filepath}")
+
+    except Exception as e:
+        print(f"\n监控检查时出错: {e}")
         traceback.print_exc()
 
 
@@ -329,7 +406,7 @@ def main():
 
     # 预处理参数：如果没有指定子命令，默认使用 analyze
     args_list = sys.argv[1:]
-    known_commands = ["analyze", "compare", "sector", "--help", "-h", "--version", "-v"]
+    known_commands = ["analyze", "compare", "sector", "monitor", "--help", "-h", "--version", "-v"]
 
     # 检查是否需要添加默认子命令
     need_analyze = False
@@ -363,11 +440,30 @@ def main():
   # 批量分析多只股票
   python stock_analyzer.py 000333 600519 300750
 
+  # 分析美股（需要 pip install yfinance）
+  python stock_analyzer.py AAPL
+  python stock_analyzer.py TSLA NVDA
+
+  # 导出为 HTML
+  python stock_analyzer.py 000333 --format html
+
+  # 导出为 PDF（需要 pip install weasyprint，不可用时自动降级为 HTML）
+  python stock_analyzer.py 000333 --format pdf
+
   # 双股对比分析
   python stock_analyzer.py compare 600519 000858
 
   # 板块分析
   python stock_analyzer.py sector 白酒
+
+  # 反证清单监控（检查所有报告）
+  python stock_analyzer.py monitor
+
+  # 反证清单监控（检查指定股票）
+  python stock_analyzer.py monitor 000333 600519
+
+  # 反证清单监控（只检查最近 3 天的报告）
+  python stock_analyzer.py monitor --days 3
 
   # 指定输出目录
   python stock_analyzer.py -o ./reports 600519
@@ -382,6 +478,7 @@ def main():
   分析报告保存到: 分析报告/股票代码-股票名称-分析报告-日期.md
   对比报告保存到: 对比-名称A vs 名称B-日期.md
   板块报告保存到: 板块-板块名称-日期.md
+  监控报告保存到: 监控报告-日期.md
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
         """
     )
@@ -400,7 +497,13 @@ def main():
     analyze_parser.add_argument(
         "codes",
         nargs="+",
-        help="股票代码（支持 A 股 6 位代码和港股 5 位代码）"
+        help="股票代码（支持 A 股 6 位代码、港股 5 位代码、美股 ticker 如 AAPL）"
+    )
+    analyze_parser.add_argument(
+        "--format", "-f",
+        choices=["md", "html", "pdf"],
+        default="md",
+        help="输出格式：md=Markdown（默认），html=HTML，pdf=PDF"
     )
 
     # compare 子命令
@@ -411,6 +514,12 @@ def main():
     )
     compare_parser.add_argument("code_a", help="股票 A 代码")
     compare_parser.add_argument("code_b", help="股票 B 代码")
+    compare_parser.add_argument(
+        "--format", "-f",
+        choices=["md", "html", "pdf"],
+        default="md",
+        help="输出格式：md=Markdown（默认），html=HTML，pdf=PDF"
+    )
 
     # sector 子命令
     sector_parser = subparsers.add_parser(
@@ -423,6 +532,35 @@ def main():
         help="板块名称",
         choices=["白酒", "新能源", "半导体", "银行", "医药", "消费", "科技", "地产", "军工", "汽车"]
     )
+    sector_parser.add_argument(
+        "--format", "-f",
+        choices=["md", "html", "pdf"],
+        default="md",
+        help="输出格式：md=Markdown（默认），html=HTML，pdf=PDF"
+    )
+
+    # monitor 子命令
+    monitor_parser = subparsers.add_parser(
+        "monitor",
+        help="反证清单监控",
+        description="扫描历史分析报告，检查反证清单中的条件是否已触发"
+    )
+    monitor_parser.add_argument(
+        "codes",
+        nargs="*",
+        help="股票代码过滤（不指定则检查所有报告）"
+    )
+    monitor_parser.add_argument(
+        "--report-dir", "-d",
+        default="分析报告",
+        help="分析报告目录（默认: 分析报告）"
+    )
+    monitor_parser.add_argument(
+        "--days",
+        type=int,
+        default=None,
+        help="只检查最近 N 天的报告"
+    )
 
     args = parser.parse_args()
 
@@ -433,6 +571,8 @@ def main():
         cmd_compare(args)
     elif args.command == "sector":
         cmd_sector(args)
+    elif args.command == "monitor":
+        cmd_monitor(args)
     else:
         parser.print_help()
 

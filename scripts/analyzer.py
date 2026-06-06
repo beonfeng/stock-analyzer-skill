@@ -11,7 +11,7 @@ from typing import Dict, Any
 import pandas as pd
 import numpy as np
 
-from .market_utils import get_market_info, convert_price, is_hk_stock, get_secid
+from .market_utils import get_market_info, convert_price, is_hk_stock, is_us_stock, get_secid
 from .utils import _http_get, _http_get_safe
 from .technical_indicators import calculate_extended_indicators
 from .valuation_analysis import analyze_valuation_percentile
@@ -75,7 +75,7 @@ def fetch_realtime_quote(code):
     market_code, market_id, _ = get_market_info(code)
 
     # 方法1：从列表中查找（仅支持 A 股）
-    if market_code != 'HK':
+    if market_code in ('SH', 'SZ'):
         params = {
             "pn": "1", "pz": "5000", "po": "1", "np": "1",
             "ut": "bd1d9ddb04089700cf9c27f6f7426281",
@@ -118,12 +118,23 @@ def fetch_realtime_quote(code):
             """获取直接可用的字段"""
             return safe_float(data.get(field, 0))
 
+        # PE：美股 f162 可能为 '-'，用 f92 作为备选
+        pe_raw = data.get("f162", "-")
+        if pe_raw == "-" or pe_raw is None:
+            pe = direct("f92")  # f92 直接是 PE 值
+        else:
+            pe = direct("f162") / 100
+
+        # PB：美股 f167 可能需要不同处理
+        pb_raw = data.get("f167", "-")
+        pb = direct("f167") / 100 if pb_raw != "-" and pb_raw is not None else 0
+
         return {
             "f14": data.get("f58", ""),  # 名称
             "f2": convert_field("f43"),  # 最新价
             "f3": direct("f170") / 100,   # 涨跌幅 -- 需要除以100
-            "f9": direct("f162") / 100,   # PE -- 需要除以100
-            "f23": direct("f167") / 100,  # PB -- 需要除以100
+            "f9": pe,   # PE
+            "f23": pb,  # PB
             "f20": direct("f116"),  # 总市值（元）
             "f21": direct("f117"),  # 流通市值（元）
             "f37": direct("f173"),  # ROE（已经是百分比）
@@ -1181,6 +1192,10 @@ def analyze_stock(code, output_dir="."):
     print(f"  分析股票: {code}")
     print(f"{'='*60}")
 
+    us_mode = is_us_stock(code)
+    if us_mode:
+        print("  市场类型: 美股（通过东方财富 API 获取数据）")
+
     name = get_stock_name(code)
     print(f"  股票名称: {name}")
 
@@ -1195,18 +1210,33 @@ def analyze_stock(code, output_dir="."):
     print("[2/12] 获取实时行情...")
     quote = fetch_realtime_quote(code)
 
-    print("[3/12] 获取资金流向...")
-    fund_flow = fetch_fund_flow(code)
+    if us_mode:
+        # 美股：跳过东方财富专属数据
+        print("[3/12] 资金流向... [N/A 美股不适用]")
+        fund_flow = {}
 
-    print("[4/12] 获取北向资金...")
-    north_flow = fetch_north_flow()
+        print("[4/12] 北向资金... [N/A 美股不适用]")
+        north_flow = {}
 
-    print("[5/12] 获取新闻和行业数据...")
-    news_df = fetch_stock_news(code)
-    industry_df = fetch_industry_boards()
+        print("[5/12] 新闻和行业数据... [N/A 美股不适用]")
+        news_df = pd.DataFrame()
+        industry_df = pd.DataFrame()
 
-    print("[6/12] 获取财务报表数据...")
-    financial_data = fetch_financial_report(code)
+        print("[6/12] 财务报表... [使用东方财富行情数据]")
+        financial_data = {}
+    else:
+        print("[3/12] 获取资金流向...")
+        fund_flow = fetch_fund_flow(code)
+
+        print("[4/12] 获取北向资金...")
+        north_flow = fetch_north_flow()
+
+        print("[5/12] 获取新闻和行业数据...")
+        news_df = fetch_stock_news(code)
+        industry_df = fetch_industry_boards()
+
+        print("[6/12] 获取财务报表数据...")
+        financial_data = fetch_financial_report(code)
 
     print("[7/12] 计算技术指标...")
     indicators = calculate_indicators(df_hist)
@@ -1220,7 +1250,8 @@ def analyze_stock(code, output_dir="."):
 
     print("[9/12] 计算动态止损/目标位...")
     price = indicators.get("最新价", 0)
-    board_type = detect_board_type(code)
+    # 美股使用 main 板型（无涨跌幅限制，但计算逻辑兼容）
+    board_type = "main" if us_mode else detect_board_type(code)
     stop_loss = calc_dynamic_stop_loss(
         current_price=price,
         atr=indicators.get("ATR14", 0),
@@ -1244,22 +1275,36 @@ def analyze_stock(code, output_dir="."):
     risk_check = check_risk_rules(
         code=code,
         indicators=indicators,
-        is_st="ST" in name,
+        is_st=False,  # 美股无 ST 概念
         is_new_stock=False
     )
 
-    print("[12/12] 分析新闻情感...")
-    sentiment_result = analyze_sentiment(news_df.to_dict("records") if not news_df.empty else [])
+    if us_mode:
+        print("[12/12] 新闻情感... [N/A 美股不适用]")
+        sentiment_result = {"score": 0, "label": "N/A", "positive": 0, "negative": 0, "neutral": 0}
 
-    print("\n计算财务健康指标和投资评级...")
-    financial_health = calculate_financial_health(quote, financial_data)
-    rating = calculate_rating(indicators, financial_health, fund_flow)
+        print("\n计算财务健康指标和投资评级...")
+        financial_health = calculate_financial_health(quote, financial_data)
+        rating = calculate_rating(indicators, financial_health, fund_flow)
 
-    print("分析估值分位数...")
-    valuation_percentile = analyze_valuation_percentile(code, quote, years=5)
+        print("估值分位... [N/A 美股无历史分位数据]")
+        valuation_percentile = None
 
-    print("分析行业对比...")
-    industry_comparison = analyze_industry_comparison(code)
+        print("行业对比... [N/A 美股不适用]")
+        industry_comparison = None
+    else:
+        print("[12/12] 分析新闻情感...")
+        sentiment_result = analyze_sentiment(news_df.to_dict("records") if not news_df.empty else [])
+
+        print("\n计算财务健康指标和投资评级...")
+        financial_health = calculate_financial_health(quote, financial_data)
+        rating = calculate_rating(indicators, financial_health, fund_flow)
+
+        print("分析估值分位数...")
+        valuation_percentile = analyze_valuation_percentile(code, quote, years=5)
+
+        print("分析行业对比...")
+        industry_comparison = analyze_industry_comparison(code)
 
     print("\n生成分析报告...")
     report = generate_report(
