@@ -55,10 +55,12 @@ def get_market_info(code):
     if len(code) == 5 and code.isdigit():
         return ('HK', 116, 1000)
 
-    # A 股：6 位数字
+    # A 股/ETF：6 位数字
     if len(code) == 6 and code.isdigit():
-        if code.startswith('6'):
+        # 上交所：6xxxxx（A 股）、5xxxxx（ETF）
+        if code[0] in '65':
             return ('SH', 1, 100)
+        # 深交所：0xxxxx（A 股）、3xxxxx（创业板）、1xxxxx（ETF/LOF）
         elif code[0] in '031':
             return ('SZ', 0, 100)
 
