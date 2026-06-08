@@ -285,6 +285,7 @@ def fetch_company_profile(code):
         '公司简介': '',
         '经营范围': '',
         '主营业务': [],
+        '股东结构': [],
     }
 
     try:
@@ -366,6 +367,37 @@ def fetch_company_profile(code):
                         '占比': ratio,
                         '毛利率': gross,
                         '报告期': latest_date,
+                    })
+    except Exception:
+        pass
+
+    # 3. 获取十大流通股东
+    try:
+        params3 = {
+            'type': 'RPT_F10_EH_FREEHOLDERS',
+            'sty': 'ALL',
+            'filter': f'(SECUCODE="{secucode}")',
+            'p': '1', 'ps': '30',
+            'sr': '-1', 'st': 'END_DATE',
+            'source': 'HSF10', 'client': 'PC',
+        }
+        j3 = _http_get_safe('datacenter.eastmoney.com', '/api/data/get', params3, retries=3)
+        if j3 and isinstance(j3, dict) and j3.get('result'):
+            items3 = j3['result'].get('data', [])
+            if items3:
+                from collections import defaultdict as _dd
+                by_date3 = _dd(list)
+                for it in items3:
+                    date = it.get('END_DATE', '')[:10]
+                    by_date3[date].append(it)
+                latest3 = max(by_date3.keys())
+                for it in sorted(by_date3[latest3], key=lambda x: x.get('HOLD_NUM', 0), reverse=True)[:10]:
+                    result['股东结构'].append({
+                        '名称': it.get('HOLDER_NAME', ''),
+                        '持股数': it.get('HOLD_NUM', 0),
+                        '占流通股比': it.get('FREE_HOLDNUM_RATIO', 0) or 0,
+                        '股东性质': it.get('HOLDER_TYPE', ''),
+                        '报告期': latest3,
                     })
     except Exception:
         pass
@@ -801,6 +833,137 @@ def generate_report(code, name, df, indicators, fund_flow, north_flow, quote, ne
                 gross = item.get('毛利率', 0)
                 L.append(f"| {name_str} | {income:.2f} | {ratio:.2f}% | {gross:.2f}% |")
             L.append("")
+
+        # 股权结构
+        holders = company_profile.get('股东结构', [])
+        if holders:
+            L.append("### 股权结构（前十大流通股东）\n")
+            L.append("| 股东 | 持股(亿股) | 占流通股 | 性质 |")
+            L.append("|------|-----------|----------|------|")
+            for h in holders[:10]:
+                h_name = h.get('名称', '')
+                h_shares = h.get('持股数', 0) / 1e8
+                h_ratio = h.get('占流通股比', 0)
+                h_type = h.get('股东性质', '')
+                L.append(f"| {h_name} | {h_shares:.2f} | {h_ratio:.2f}% | {h_type} |")
+            L.append("")
+
+            # 股权集中度分析
+            top1_ratio = holders[0].get('占流通股比', 0) if holders else 0
+            top3_ratio = sum(h.get('占流通股比', 0) for h in holders[:3])
+            if top1_ratio > 30:
+                L.append(f"> **股权集中度**：第一大股东持股 {top1_ratio:.1f}%，前三合计 {top3_ratio:.1f}%，属于高度集中型股权结构。\n")
+            elif top1_ratio > 15:
+                L.append(f"> **股权集中度**：第一大股东持股 {top1_ratio:.1f}%，前三合计 {top3_ratio:.1f}%，属于相对集中型股权结构。\n")
+
+    # ── 公司分析 ──
+    if company_profile and (company_profile.get('主营业务') or company_profile.get('股东结构')):
+        L.append("---\n## 公司分析\n")
+
+        biz = company_profile.get('主营业务', [])
+        holders = company_profile.get('股东结构', [])
+        info = company_profile.get('基本信息', {})
+
+        # 机会分析
+        L.append("### 最大机会\n")
+        opportunities = []
+
+        # 1. 检查是否有高增长业务（占比低但可能增长）
+        if biz:
+            main_biz = [b for b in biz if b.get('占比', 0) > 1]
+            small_biz = [b for b in biz if 0.5 < b.get('占比', 0) < 15]
+            if small_biz:
+                names = '、'.join([b.get('名称', '') for b in small_biz[:2]])
+                opportunities.append(f"**新业务成长空间**：{names} 等业务当前占比不高，若行业景气向上，有较大的增长弹性")
+
+        # 2. 检查行业属性
+        industry = info.get('所属行业', '')
+        if industry:
+            opportunities.append(f"**行业地位**：所属「{industry}」行业，需关注行业政策和景气度变化")
+
+        # 3. 检查是否有境外业务
+        overseas = [b for b in biz if '境外' in b.get('名称', '')]
+        if overseas and overseas[0].get('占比', 100) < 5:
+            opportunities.append(f"**海外市场**：境外收入占比仅 {overseas[0].get('占比', 0):.1f}%，海外市场拓展潜力大")
+
+        # 4. 检查毛利率趋势
+        high_margin = [b for b in biz if b.get('毛利率', 0) > 30]
+        if high_margin:
+            names = '、'.join([b.get('名称', '') for b in high_margin[:2]])
+            opportunities.append(f"**高毛利业务**：{names} 毛利率较高，盈利能力强")
+
+        for opp in opportunities:
+            L.append(f"- {opp}")
+        if not opportunities:
+            L.append("- 暂无明显业务亮点，需结合行业趋势进一步分析")
+        L.append("")
+
+        # 风险分析
+        L.append("### 最大风险\n")
+        risks = []
+
+        # 1. 股权集中风险
+        if holders:
+            top1 = holders[0].get('占流通股比', 0)
+            if top1 > 40:
+                risks.append(f"**股权高度集中**：第一大股东持股 {top1:.1f}%，公司治理和决策依赖少数人，存在治理风险")
+
+        # 2. 业务集中风险
+        if biz:
+            max_biz = max(biz, key=lambda x: x.get('占比', 0))
+            if max_biz.get('占比', 0) > 40:
+                risks.append(f"**业务集中**：{max_biz.get('名称', '')} 收入占比 {max_biz.get('占比', 0):.1f}%，单一业务依赖度高")
+
+        # 3. 估值风险
+        pe = safe_num(quote.get('f9', 0)) if quote else 0
+        if pe > 80:
+            risks.append(f"**估值偏高**：当前 PE {pe:.1f}，估值透支未来增长，面临估值压缩风险")
+
+        # 4. 涨幅风险
+        chg_60 = indicators.get('涨跌幅_60日', 0)
+        if chg_60 > 50:
+            risks.append(f"**短期涨幅过大**：近60日涨幅 {chg_60:.1f}%，获利盘积累，回调压力较大")
+
+        # 5. 财务风险
+        if financial_health:
+            red_flags = financial_health.get('排雷红灯', [])
+            if red_flags:
+                risks.append(f"**财务排雷预警**：{'; '.join(red_flags[:2])}")
+
+        for risk in risks:
+            L.append(f"- {risk}")
+        if not risks:
+            L.append("- 暂无明显重大风险，整体基本面稳健")
+        L.append("")
+
+        # 核心洞察
+        L.append("### 核心洞察\n")
+        insights = []
+
+        # 综合判断
+        direction = weighted_score.get('direction', 'hold') if weighted_score else 'hold'
+        score = weighted_score.get('score', 0) if weighted_score else 0
+        stars = rating.get('星级', 3) if rating else 3
+
+        if stars >= 4 and direction == 'buy':
+            insights.append("综合评级较高且技术面看多，基本面与技术面共振，值得关注")
+        elif stars >= 4 and direction == 'hold':
+            insights.append("基本面优质但技术面尚未确认，建议等待技术信号配合")
+        elif stars <= 2 and direction == 'sell':
+            insights.append("基本面和技术面均偏弱，建议回避或减仓")
+        else:
+            insights.append("基本面与技术面信号分化，建议观望等待更明确的方向")
+
+        # 估值判断
+        if pe > 0:
+            if pe < 15:
+                insights.append(f"估值偏低（PE {pe:.1f}），具有安全边际")
+            elif pe > 50:
+                insights.append(f"估值偏高（PE {pe:.1f}），需要业绩高增长支撑")
+
+        for insight in insights:
+            L.append(f"- {insight}")
+        L.append("")
 
     # ── 总结 ──
     L.append("---\n## 总结\n")
