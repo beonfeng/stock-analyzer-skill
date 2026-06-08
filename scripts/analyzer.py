@@ -1262,7 +1262,7 @@ def analyze_stock(code, output_dir="."):
 
     # 交易日检查
     if not is_trading_day():
-        print("  📅 今天不是交易日，数据为最近交易日的快照")
+        print("  [提示] 今天不是交易日，数据为最近交易日的快照")
 
     us_mode = is_us_stock(code)
     if us_mode:

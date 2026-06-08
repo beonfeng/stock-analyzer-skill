@@ -128,11 +128,11 @@ def _rate_limit():
 
     # 会话级请求警告
     if _session_request_count == 50:
-        print("  ⚠️  本次会话已发送 50 次 API 请求，建议稍后再试以避免被限流")
+        print("  [注意] 本次会话已发送 50 次 API 请求，建议稍后再试以避免被限流")
     elif _session_request_count == 100:
-        print("  🔴  本次会话已发送 100 次 API 请求！继续频繁调用可能导致 IP 被限流")
+        print("  [警告] 本次会话已发送 100 次 API 请求！继续频繁调用可能导致 IP 被限流")
     elif _session_request_count > 0 and _session_request_count % 50 == 0:
-        print(f"  🔴  本次会话已发送 {_session_request_count} 次 API 请求，请注意控制频率")
+        print(f"  [警告] 本次会话已发送 {_session_request_count} 次 API 请求，请注意控制频率")
 
 
 def _get_cache_key(host, path, params):
@@ -267,8 +267,10 @@ def _http_get(host, path, params=None, timeout=15, retries=3, use_cache=True):
                 except:
                     pass
             if attempt < retries - 1:
-                # 指数退避 + 随机抖动
-                wait_time = (2.0 ** attempt) + random.uniform(1.0, 3.0)
+                # 指数退避 + 随机抖动（连接断开时等待更久）
+                base_wait = 3.0 ** attempt + 2.0
+                jitter = random.uniform(1.0, 3.0)
+                wait_time = base_wait + jitter
                 time.sleep(wait_time)
                 continue
     raise last_err
@@ -342,22 +344,22 @@ def print_request_stats():
     duration = stats["session_duration"]
 
     print(f"\n{'─'*40}")
-    print(f"  📊 API 请求统计")
+    print(f"  [统计] API 请求统计")
     print(f"  实际请求数: {total}")
     print(f"  缓存命中数: {hits}")
     print(f"  会话时长: {duration:.1f} 秒")
 
     # 建议提示
     if total > 100:
-        print(f"  🔴 请求次数过多，建议间隔 10 分钟以上再继续分析")
+        print(f"  [警告] 请求次数过多，建议间隔 10 分钟以上再继续分析")
     elif total > 50:
-        print(f"  ⚠️  请求次数偏多，建议适当控制分析频率")
+        print(f"  [注意] 请求次数偏多，建议适当控制分析频率")
     else:
-        print(f"  ✅ 请求次数在安全范围内")
+        print(f"  [OK] 请求次数在安全范围内")
 
     # 交易日提示
     if not is_trading_day():
-        print(f"  📅 今天不是交易日，数据为最近交易日的快照")
+        print(f"  [提示] 今天不是交易日，数据为最近交易日的快照")
     print(f"{'─'*40}")
 
 
