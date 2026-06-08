@@ -60,6 +60,11 @@ _request_count = 0
 _request_window_start = 0
 _max_requests_per_minute = 30  # 每分钟最大请求数
 
+# 会话级请求统计
+_session_request_count = 0
+_session_cache_hits = 0
+_session_start_time = None
+
 
 def _get_random_headers():
     """生成随机请求头，模拟不同浏览器"""
@@ -90,6 +95,11 @@ def _get_random_headers():
 def _rate_limit():
     """速率限制：确保请求间隔和频率在安全范围内"""
     global _last_request_time, _request_count, _request_window_start
+    global _session_request_count, _session_start_time
+
+    # 初始化会话计时
+    if _session_start_time is None:
+        _session_start_time = time.time()
 
     now = time.time()
 
@@ -114,6 +124,15 @@ def _rate_limit():
 
     _last_request_time = time.time()
     _request_count += 1
+    _session_request_count += 1
+
+    # 会话级请求警告
+    if _session_request_count == 50:
+        print("  ⚠️  本次会话已发送 50 次 API 请求，建议稍后再试以避免被限流")
+    elif _session_request_count == 100:
+        print("  🔴  本次会话已发送 100 次 API 请求！继续频繁调用可能导致 IP 被限流")
+    elif _session_request_count > 0 and _session_request_count % 50 == 0:
+        print(f"  🔴  本次会话已发送 {_session_request_count} 次 API 请求，请注意控制频率")
 
 
 def _get_cache_key(host, path, params):
@@ -178,6 +197,8 @@ def _http_get(host, path, params=None, timeout=15, retries=3, use_cache=True):
         cache_key = _get_cache_key(host, path, params)
         cached = _get_from_cache(cache_key)
         if cached is not None:
+            global _session_cache_hits
+            _session_cache_hits += 1
             return cached
 
     url = path
@@ -274,3 +295,75 @@ def get_cache_stats():
         "request_count": _request_count,
         "window_start": _request_window_start,
     }
+
+
+def is_trading_day(date=None):
+    """
+    判断指定日期是否为交易日（排除周末）。
+
+    注意：不包含节假日判断（如春节、国庆等），仅排除周六日。
+
+    Args:
+        date: datetime.date 对象，默认为今天
+
+    Returns:
+        bool: True 表示是交易日（周一~周五）
+    """
+    if date is None:
+        from datetime import date as _date
+        date = _date.today()
+    return date.weekday() < 5  # 0=周一, 4=周五, 5=周六, 6=周日
+
+
+def get_session_request_stats():
+    """
+    获取本次会话的请求统计。
+
+    Returns:
+        dict: {
+            'total_requests': int,      # 实际 API 请求数
+            'cache_hits': int,          # 缓存命中数
+            'session_duration': float,  # 会话时长（秒）
+        }
+    """
+    duration = time.time() - _session_start_time if _session_start_time else 0
+    return {
+        "total_requests": _session_request_count,
+        "cache_hits": _session_cache_hits,
+        "session_duration": duration,
+    }
+
+
+def print_request_stats():
+    """打印本次会话的请求统计摘要"""
+    stats = get_session_request_stats()
+    total = stats["total_requests"]
+    hits = stats["cache_hits"]
+    duration = stats["session_duration"]
+
+    print(f"\n{'─'*40}")
+    print(f"  📊 API 请求统计")
+    print(f"  实际请求数: {total}")
+    print(f"  缓存命中数: {hits}")
+    print(f"  会话时长: {duration:.1f} 秒")
+
+    # 建议提示
+    if total > 100:
+        print(f"  🔴 请求次数过多，建议间隔 10 分钟以上再继续分析")
+    elif total > 50:
+        print(f"  ⚠️  请求次数偏多，建议适当控制分析频率")
+    else:
+        print(f"  ✅ 请求次数在安全范围内")
+
+    # 交易日提示
+    if not is_trading_day():
+        print(f"  📅 今天不是交易日，数据为最近交易日的快照")
+    print(f"{'─'*40}")
+
+
+def reset_request_stats():
+    """重置会话请求统计（用于新一轮分析开始时）"""
+    global _session_request_count, _session_cache_hits, _session_start_time
+    _session_request_count = 0
+    _session_cache_hits = 0
+    _session_start_time = time.time()

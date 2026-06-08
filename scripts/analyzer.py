@@ -12,7 +12,7 @@ import pandas as pd
 import numpy as np
 
 from .market_utils import get_market_info, convert_price, is_hk_stock, is_us_stock, get_secid
-from .utils import _http_get, _http_get_safe, safe_num
+from .utils import _http_get, _http_get_safe, safe_num, is_trading_day, print_request_stats, reset_request_stats
 from .technical_indicators import calculate_extended_indicators
 from .valuation_analysis import analyze_valuation_percentile
 from .industry_analysis import analyze_industry_comparison
@@ -368,12 +368,25 @@ _HK_STOCK_NAMES = {
     "03988": "中国银行", "01288": "农业银行",
 }
 
-def get_stock_name(code):
-    """获取股票名称：先尝试 API，再用内置映射"""
+def get_stock_name(code, return_quote=False):
+    """
+    获取股票名称：先尝试 API，再用内置映射。
+
+    Args:
+        code: 股票代码
+        return_quote: 如果为 True，返回 (name, quote) 元组，避免后续重复请求
+
+    Returns:
+        str: 股票名称（return_quote=False 时）
+        tuple: (name, quote)（return_quote=True 时）
+    """
+    quote = None
     try:
         quote = fetch_realtime_quote(code)
         name = quote.get("f14", "")
         if name:
+            if return_quote:
+                return name, quote
             return name
     except Exception:
         pass
@@ -381,10 +394,15 @@ def get_stock_name(code):
     try:
         market_code, _, _ = get_market_info(code)
         if market_code == 'HK':
-            return _HK_STOCK_NAMES.get(code, code)
+            name = _HK_STOCK_NAMES.get(code, code)
+        else:
+            name = _STOCK_NAMES.get(code, code)
     except ValueError:
-        pass
-    return _STOCK_NAMES.get(code, code)
+        name = _STOCK_NAMES.get(code, code)
+
+    if return_quote:
+        return name, quote if quote else {"market": ""}
+    return name
 
 
 # ============================================================
@@ -746,18 +764,23 @@ def generate_report(code, name, df, indicators, fund_flow, north_flow, quote, ne
     # MACD
     L.append("\n### 2.2 MACD\n")
     L.append("MACD（指数平滑异同移动平均线）由 DIF 线和 DEA 线组成，用于判断趋势强弱和转折。")
-    L.append("- **DIF**：短期EMA(12)与长期EMA(26)的差值，反映价格动能")
-    L.append("- **DEA**：DIF 的 9 日均线，用于平滑 DIF")
-    L.append("- **金叉**（DIF上穿DEA）→ 买入信号；**死叉**（DIF下穿DEA）→ 卖出信号")
-    L.append("- MACD柱 = (DIF - DEA) × 2，柱子由负转正 → 多头增强\n")
+    L.append("- **DIF**：短期EMA(12)与长期EMA(26)的差值，反映价格动能。DIF > 0 表示短期趋势强于长期")
+    L.append("- **DEA**：DIF 的 9 日均线，用于平滑 DIF。DEA > 0 表示中期趋势向上")
+    L.append("- **MACD柱**：(DIF - DEA) × 2，反映多空力量对比")
+    L.append("  - 红柱（正值）：多头占优，柱子放大表示多头增强")
+    L.append("  - 绿柱（负值）：空头占优，柱子放大表示空头增强")
+    L.append("- **金叉**（DIF上穿DEA）→ 买入信号；**死叉**（DIF下穿DEA）→ 卖出信号\n")
     dif_val = indicators.get("DIF", 0)
     dea_val = indicators.get("DEA", 0)
     macd_val = indicators.get("MACD", 0)
-    L.append(f"| 指标 | 数值 | 信号 |")
-    L.append(f"|------|------|------|")
-    L.append(f"| DIF | {dif_val:.4f} | |")
-    L.append(f"| DEA | {dea_val:.4f} | |")
-    L.append(f"| MACD柱 | {macd_val:.4f} | {'金叉（看涨）' if dif_val > dea_val else '死叉（看跌）'} |")
+    dif_signal = "短期趋势强于长期" if dif_val > 0 else "短期趋势弱于长期"
+    dea_signal = "中期趋势向上" if dea_val > 0 else "中期趋势向下"
+    macd_signal = "金叉（看涨）" if dif_val > dea_val else "死叉（看跌）"
+    L.append(f"| 指标 | 数值 | 含义 | 信号 |")
+    L.append(f"|------|------|------|------|")
+    L.append(f"| DIF | {dif_val:.4f} | {dif_signal} | |")
+    L.append(f"| DEA | {dea_val:.4f} | {dea_signal} | |")
+    L.append(f"| MACD柱 | {macd_val:.4f} | {'红柱，多头占优' if macd_val > 0 else '绿柱，空头占优'} | {macd_signal} |")
 
     # KDJ
     L.append("\n### 2.3 KDJ\n")
@@ -780,46 +803,82 @@ def generate_report(code, name, df, indicators, fund_flow, north_flow, quote, ne
     # RSI
     L.append("\n### 2.4 RSI\n")
     L.append("RSI（相对强弱指数）衡量一段时间内涨幅与跌幅的比值，取值 0~100。")
-    L.append("- **> 80**：超买，短期可能见顶；**< 20**：超卖，短期可能见底")
-    L.append("- **50 以上**：多方占优；**50 以下**：空方占优\n")
+    L.append("- **> 80**：超买区，短期可能见顶，有回调风险")
+    L.append("- **70-80**：强势区，多方占优，但接近超买")
+    L.append("- **50-70**：中性偏多，多方略占优")
+    L.append("- **30-50**：中性偏空，空方略占优")
+    L.append("- **20-30**：弱势区，空方占优，可能超卖")
+    L.append("- **< 20**：超卖区，短期可能见底，有反弹机会\n")
+    L.append("| 周期 | 数值 | 区域 | 含义 |")
+    L.append("|------|------|------|------|")
     for p in [6, 12, 24]:
         rsi = indicators.get(f"RSI{p}", 50)
-        z = "超买（>80）" if rsi > 80 else "超卖（<20）" if rsi < 20 else "中性"
-        L.append(f"- RSI{p}：{rsi:.2f}（{z}）")
+        if rsi > 80:
+            z = "超买区"
+            desc = "短期可能见顶"
+        elif rsi > 70:
+            z = "强势区"
+            desc = "多方占优，接近超买"
+        elif rsi > 50:
+            z = "中性偏多"
+            desc = "多方略占优"
+        elif rsi > 30:
+            z = "中性偏空"
+            desc = "空方略占优"
+        elif rsi > 20:
+            z = "弱势区"
+            desc = "空方占优，可能超卖"
+        else:
+            z = "超卖区"
+            desc = "短期可能见底"
+        L.append(f"| RSI{p} | {rsi:.2f} | {z} | {desc} |")
 
     # 布林带
     L.append("\n### 2.5 布林带（BOLL）\n")
-    L.append("布林带由三条轨道组成：中轨（20日均线）、上轨（中轨+2倍标准差）、下轨（中轨-2倍标准差）。")
-    L.append("- 价格触及上轨 → 可能超买回调；触及下轨 → 可能超卖反弹")
-    L.append("- 带宽收窄 → 即将变盘；带宽扩大 → 趋势延续\n")
+    L.append("布林带由三条轨道组成，用于判断价格波动区间和超买超卖状态。")
+    L.append("- **上轨**（中轨+2倍标准差）：压力位，价格触及上轨可能回调")
+    L.append("- **中轨**（20日均线）：趋势线，价格在中轨上方为多头，下方为空头")
+    L.append("- **下轨**（中轨-2倍标准差）：支撑位，价格触及下轨可能反弹")
+    L.append("- **带宽**：上下轨之间的距离，带宽收窄表示即将变盘，带宽扩大表示趋势延续\n")
     boll_up = indicators.get("BOLL_UP", 0)
     boll_mid = indicators.get("BOLL_MID", 0)
     boll_dn = indicators.get("BOLL_DN", 0)
-    L.append(f"| 轨道 | 数值 |")
-    L.append(f"|------|------|")
-    L.append(f"| 上轨 | {boll_up:.2f} |")
-    L.append(f"| 中轨 | {boll_mid:.2f} |")
-    L.append(f"| 下轨 | {boll_dn:.2f} |")
+    boll_width = (boll_up - boll_dn) / boll_mid * 100 if boll_mid > 0 else 0
+    L.append(f"| 轨道 | 数值 | 含义 |")
+    L.append(f"|------|------|------|")
+    L.append(f"| 上轨 | {boll_up:.2f} | 压力位（超买线） |")
+    L.append(f"| 中轨 | {boll_mid:.2f} | 20日均线（趋势线） |")
+    L.append(f"| 下轨 | {boll_dn:.2f} | 支撑位（超卖线） |")
+    L.append(f"| 带宽 | {boll_width:.2f}% | 波动率（越窄越可能变盘） |")
     if price:
         if price > boll_up:
-            L.append(f"\n> 当前价格 {price} **突破上轨**，注意回调风险")
-        elif price < boll_dn:
-            L.append(f"\n> 当前价格 {price} **跌破下轨**，可能超卖")
+            L.append(f"\n> 当前价格 {price} **突破上轨**，处于超买区域，注意回调风险")
+        elif price > boll_mid:
+            L.append(f"\n> 当前价格 {price} 在**中轨与上轨之间**，多头趋势")
+        elif price > boll_dn:
+            L.append(f"\n> 当前价格 {price} 在**下轨与中轨之间**，空头趋势")
         else:
-            L.append(f"\n> 当前价格 {price} 在布林带内部运行")
+            L.append(f"\n> 当前价格 {price} **跌破下轨**，处于超卖区域，可能反弹")
 
     # ATR
     atr = indicators.get("ATR14", 0)
     if atr:
-        L.append(f"\n**ATR14**（14日平均真实波幅）：{atr:.2f} 元。ATR 越大说明近期波动越剧烈。")
+        L.append(f"\n**ATR14**（14日平均真实波幅）：{atr:.2f} 元")
+        L.append("- ATR 反映近期价格波动幅度，数值越大波动越剧烈")
+        L.append("- 常用于计算止损位（如：止损价 = 当前价 - 2×ATR）")
 
     # ── 三、资金分析 ──
     L.append("\n---\n## 三、资金分析\n")
 
     if fund_flow:
-        L.append("资金流向反映市场中不同规模资金的买卖方向。主力资金（超大单+大单）通常代表机构动向。")
-        L.append("- 主力净流入 → 机构看好，可能推动上涨")
-        L.append("- 主力净流出 → 机构撤离，可能带来下跌\n")
+        L.append("资金流向反映市场中不同规模资金的买卖方向。")
+        L.append("- **主力资金**（超大单+大单）：通常代表机构动向，对股价影响最大")
+        L.append("- **超大单**（>100万元）：通常为大型机构或基金操作")
+        L.append("- **大单**（20~100万元）：中型机构或大户操作")
+        L.append("- **中单**（4~20万元）：小型机构或大户操作")
+        L.append("- **小单**（<4万元）：散户操作")
+        L.append("- **净流入**：买入金额 > 卖出金额，表示资金看好")
+        L.append("- **净流出**：卖出金额 > 买入金额，表示资金撤离\n")
 
         field_labels = [
             ("f62", "f184", "主力（超大单+大单）"),
@@ -833,12 +892,13 @@ def generate_report(code, name, df, indicators, fund_flow, north_flow, quote, ne
             if not data:
                 continue
             L.append(f"### {period}资金流向\n")
-            L.append("| 项目 | 净流入 | 占比 |")
-            L.append("|------|--------|------|")
+            L.append("| 项目 | 净流入 | 占比 | 说明 |")
+            L.append("|------|--------|------|------|")
             for fk, pk, label in field_labels:
                 val = safe_num(data.get(fk, 0))
                 pct = data.get(pk, "-")
-                L.append(f"| {label} | {fmt_num(val)} | {pct} |")
+                desc = "资金看好" if val > 0 else "资金撤离" if val < 0 else "持平"
+                L.append(f"| {label} | {fmt_num(val)} | {pct} | {desc} |")
             L.append("")
     else:
         L.append("> 暂无资金流向数据（网络不稳定，部分接口可能获取失败）\n")
