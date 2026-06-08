@@ -275,6 +275,7 @@ _STOCK_NAMES = {
     "000895": "双汇发展", "000938": "紫光股份", "000977": "浪潮信息",
     "002027": "分众传媒", "002049": "紫光国微", "002120": "韵达股份",
     "002142": "宁波银行", "002230": "科大讯飞", "002271": "东方雨虹",
+    "002275": "桂林三金",
     "002304": "洋河股份", "002352": "顺丰控股", "002415": "海康威视",
     "002460": "赣锋锂业", "002475": "立讯精密", "002594": "比亚迪",
     "002714": "牧原股份", "002812": "恩捷股份", "002916": "深南电路",
@@ -761,16 +762,20 @@ def generate_report(code, name, df, indicators, fund_flow, north_flow, quote, ne
     # KDJ
     L.append("\n### 2.3 KDJ\n")
     L.append("KDJ（随机指标）用于判断超买超卖状态，取值范围 0~100。")
+    L.append("- **K值**：快速随机指标，反映短期价格波动")
+    L.append("- **D值**：K值的移动平均线，反映中期趋势")
+    L.append("- **J值**：K与D的偏离程度，波动最大，可提前预警拐点")
     L.append("- **K值 > 80**：超买区，价格偏高，可能回调")
-    L.append("- **K值 < 20**：超卖区，价格偏低，可能反弹")
-    L.append("- **J值**波动最大，可提前预警拐点\n")
+    L.append("- **K值 < 20**：超卖区，价格偏低，可能反弹\n")
     kv, dv, jv = indicators.get("K",50), indicators.get("D",50), indicators.get("J",50)
-    zone = "超买区（>80）" if kv > 80 else "超卖区（<20）" if kv < 20 else "中性区"
+    k_zone = "超买区（>80）" if kv > 80 else "超卖区（<20）" if kv < 20 else "中性区"
+    d_zone = "超买区（>80）" if dv > 80 else "超卖区（<20）" if dv < 20 else "中性区"
+    j_zone = "超买区（>80）" if jv > 80 else "超卖区（<20）" if jv < 20 else "中性区"
     L.append(f"| 指标 | 数值 | 区域 |")
     L.append(f"|------|------|------|")
-    L.append(f"| K | {kv:.2f} | |")
-    L.append(f"| D | {dv:.2f} | |")
-    L.append(f"| J | {jv:.2f} | {zone} |")
+    L.append(f"| K | {kv:.2f} | {k_zone} |")
+    L.append(f"| D | {dv:.2f} | {d_zone} |")
+    L.append(f"| J | {jv:.2f} | {j_zone} |")
 
     # RSI
     L.append("\n### 2.4 RSI\n")
