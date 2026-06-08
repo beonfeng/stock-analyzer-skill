@@ -53,17 +53,41 @@ _USER_AGENTS = [
 _request_cache = {}
 _cache_ttl = 300  # 缓存有效期 5 分钟
 
-# 全局速率控制
+# ============================================================
+# 全局速率控制（防封锁核心策略）
+# ============================================================
+# 东方财富 API 对请求频率非常敏感，经验值：
+# - 单分钟 >15 次 → 开始被拒绝连接
+# - 累计 10 分钟内 >60 次 → 触发 IP 级封锁（数小时）
+# - 连续请求（间隔 <0.5s）→ 被视为爬虫即刻封锁
+#
+# 策略：
+# 1. 每分钟最多 12 次（留安全余量）
+# 2. 请求间隔 1-4 秒随机（模拟人类浏览行为）
+# 3. 单 Host 连续失败时自动冷却
+# 4. 会话累计超过 60 次强制冷却 5 分钟
+# 5. 非交易日自动降频（周末没必要频繁请求）
+
 _last_request_time = 0
-_min_request_interval = 1.0  # 最小请求间隔（秒）
+_min_request_interval = 2.0  # 最小请求间隔（秒），从 1.0 提高到 2.0
+_max_request_interval = 4.0  # 最大随机间隔（秒）
 _request_count = 0
 _request_window_start = 0
-_max_requests_per_minute = 30  # 每分钟最大请求数
+_max_requests_per_minute = 12  # 每分钟最大请求数，从 30 降到 12
 
-# 会话级请求统计
+# Host 级冷却追踪
+_host_error_counts = {}  # {'host': error_count}
+_host_cooldown_until = {}  # {'host': timestamp}
+_HOST_COOLDOWN_SECONDS = 120  # Host 冷却 2 分钟
+_HOST_MAX_CONSECUTIVE_ERRORS = 2  # 连续失败 2 次即冷却
+
+# 会话级统计与硬上限
 _session_request_count = 0
 _session_cache_hits = 0
 _session_start_time = None
+_SESSION_HARD_LIMIT = 60  # 会话累计超过此值强制冷却
+_SESSION_COOLDOWN_SECONDS = 300  # 会话冷却 5 分钟
+_last_cooldown_time = 0
 
 
 def _get_random_headers():
@@ -93,9 +117,15 @@ def _get_random_headers():
 
 
 def _rate_limit():
-    """速率限制：确保请求间隔和频率在安全范围内"""
+    """
+    多层速率限制策略：
+    1. 每请求间隔 2-4 秒随机（模拟人类）
+    2. 每分钟 ≤12 次
+    3. 会话累计 >60 次 → 强制冷却 5 分钟
+    4. 非交易日自动降频
+    """
     global _last_request_time, _request_count, _request_window_start
-    global _session_request_count, _session_start_time
+    global _session_request_count, _session_start_time, _last_cooldown_time
 
     # 初始化会话计时
     if _session_start_time is None:
@@ -103,36 +133,53 @@ def _rate_limit():
 
     now = time.time()
 
-    # 检查每分钟请求数限制
+    # ── 层 0：会话硬上限检查 ──
+    if _session_request_count >= _SESSION_HARD_LIMIT:
+        cooldown_remaining = _SESSION_COOLDOWN_SECONDS - (now - _last_cooldown_time)
+        if cooldown_remaining > 0:
+            print(f"  [冷却] 本次会话已发 {_session_request_count} 次请求，强制冷却 {cooldown_remaining:.0f} 秒...")
+            time.sleep(cooldown_remaining)
+        # 重置计数器
+        _session_request_count = 0
+        _request_count = 0
+        _request_window_start = time.time()
+        _last_cooldown_time = time.time()
+        print("  [冷却] 冷却完成，恢复请求")
+
+    # ── 层 1：非交易日降频 ──
+    from datetime import date as _date
+    is_weekend = _date.today().weekday() >= 5
+    effective_max_per_min = max(6, _max_requests_per_minute // 2) if is_weekend else _max_requests_per_minute
+    effective_min_interval = _max_request_interval if is_weekend else _min_request_interval
+
+    # ── 层 2：每分钟请求数限制 ──
     if now - _request_window_start > 60:
         _request_count = 0
         _request_window_start = now
 
-    if _request_count >= _max_requests_per_minute:
-        # 超过每分钟限制，等待到下一分钟
+    if _request_count >= effective_max_per_min:
         wait_time = 60 - (now - _request_window_start) + random.uniform(1, 3)
         time.sleep(wait_time)
         _request_count = 0
         _request_window_start = time.time()
 
-    # 确保最小请求间隔
+    # ── 层 3：请求间隔（随机 2-4 秒） ──
     elapsed = time.time() - _last_request_time
-    if elapsed < _min_request_interval:
-        # 添加随机抖动，模拟人类行为
-        jitter = random.uniform(0.1, 0.5)
-        time.sleep(_min_request_interval - elapsed + jitter)
+    random_interval = random.uniform(effective_min_interval, _max_request_interval)
+    if elapsed < random_interval:
+        time.sleep(random_interval - elapsed)
 
     _last_request_time = time.time()
     _request_count += 1
     _session_request_count += 1
 
-    # 会话级请求警告
-    if _session_request_count == 50:
-        print("  [注意] 本次会话已发送 50 次 API 请求，建议稍后再试以避免被限流")
-    elif _session_request_count == 100:
-        print("  [警告] 本次会话已发送 100 次 API 请求！继续频繁调用可能导致 IP 被限流")
-    elif _session_request_count > 0 and _session_request_count % 50 == 0:
-        print(f"  [警告] 本次会话已发送 {_session_request_count} 次 API 请求，请注意控制频率")
+    # ── 层 4：会话级预警 ──
+    if _session_request_count == 30:
+        print(f"  [注意] 已发送 30 次请求，剩余额度 {_SESSION_HARD_LIMIT - _session_request_count} 次")
+    elif _session_request_count == 50:
+        print(f"  [警告] 已发送 50 次请求！仅剩 {_SESSION_HARD_LIMIT - _session_request_count} 次额度")
+    elif _session_request_count >= 55:
+        print(f"  [警告] 已发送 {_session_request_count} 次，即将触发强制冷却")
 
 
 def _get_cache_key(host, path, params):
@@ -162,6 +209,46 @@ def _set_cache(cache_key, data):
     _request_cache[cache_key] = (data, time.time())
 
 
+def _is_connection_error(err):
+    """判断错误是否为服务器主动拒绝连接"""
+    err_str = str(err)
+    rejection_keywords = [
+        'RemoteDisconnected',
+        'Connection refused',
+        'Connection reset',
+        'ConnectionResetError',
+        'Remote end closed',
+        'timed out',
+        'TimeoutError',
+    ]
+    return any(kw.lower() in err_str.lower() for kw in rejection_keywords)
+
+
+def _check_host_cooldown(host):
+    """检查 Host 是否处于冷却期，返回还需等待的秒数"""
+    if host in _host_cooldown_until:
+        remaining = _host_cooldown_until[host] - time.time()
+        if remaining > 0:
+            return remaining
+    return 0
+
+
+def _mark_host_error(host):
+    """记录 Host 错误，连续失败达到阈值时进入冷却"""
+    global _host_error_counts
+    _host_error_counts[host] = _host_error_counts.get(host, 0) + 1
+    if _host_error_counts[host] >= _HOST_MAX_CONSECUTIVE_ERRORS:
+        _host_cooldown_until[host] = time.time() + _HOST_COOLDOWN_SECONDS
+
+
+def _clear_host_error(host):
+    """请求成功时清除错误计数"""
+    if host in _host_error_counts:
+        del _host_error_counts[host]
+    if host in _host_cooldown_until:
+        del _host_cooldown_until[host]
+
+
 def safe_num(v, default=0):
     """
     安全转换为浮点数，None/非数值返回默认值。
@@ -181,16 +268,15 @@ def safe_num(v, default=0):
         return default
 
 
-def _http_get(host, path, params=None, timeout=15, retries=3, use_cache=True):
+def _http_get(host, path, params=None, timeout=15, retries=2, use_cache=True):
     """
-    直连 HTTPS GET，绕过系统代理，自动重试。
+    直连 HTTPS GET，绕过系统代理，智能重试。
 
-    反封锁策略：
-    1. 随机请求头轮换
-    2. 速率限制（每分钟最多 30 次请求）
-    3. 随机延迟（1.5-3.5 秒）
-    4. 请求缓存（5 分钟内相同请求直接返回缓存）
-    5. 减少重试次数（从 8 次改为 3 次）
+    反封锁策略（四层防护）：
+    1. 请求前：速率限制（2-4s 间隔，≤12次/分）+ Host 冷却检查
+    2. 请求时：随机请求头轮换，模拟不同浏览器
+    3. 失败时：连接拒绝类错误不重试（服务器主动拒绝，重试只会加剧封禁）
+    4. 成功后：缓存 5 分钟，清除 Host 错误计数
     """
     # 检查缓存
     if use_cache:
@@ -201,6 +287,13 @@ def _http_get(host, path, params=None, timeout=15, retries=3, use_cache=True):
             _session_cache_hits += 1
             return cached
 
+    # 检查 Host 冷却
+    cooldown_sec = _check_host_cooldown(host)
+    if cooldown_sec > 0:
+        global _session_request_count, _session_start_time
+        print(f"  [保护] Host {host} 处于冷却期（{cooldown_sec:.0f}秒），跳过请求")
+        raise ConnectionError(f"Host {host} is in cooldown ({cooldown_sec:.0f}s remaining)")
+
     url = path
     if params:
         url = path + "?" + urlencode(params)
@@ -209,8 +302,9 @@ def _http_get(host, path, params=None, timeout=15, retries=3, use_cache=True):
     for attempt in range(retries):
         conn = None
         try:
-            # 速率限制
-            _rate_limit()
+            # 速率限制（仅在首次尝试时执行，重试跳过）
+            if attempt == 0:
+                _rate_limit()
 
             # 获取随机请求头
             headers = _get_random_headers()
@@ -218,6 +312,11 @@ def _http_get(host, path, params=None, timeout=15, retries=3, use_cache=True):
             conn = http.client.HTTPSConnection(host, context=_ssl_ctx, timeout=timeout)
             conn.request("GET", url, headers=headers)
             resp = conn.getresponse()
+
+            # HTTP 429/503 → 服务器要求放慢速度
+            if resp.status in (429, 503):
+                raise ConnectionError(f"HTTP {resp.status}: rate limited by server")
+
             data = resp.read()
             conn.close()
 
@@ -225,21 +324,19 @@ def _http_get(host, path, params=None, timeout=15, retries=3, use_cache=True):
             encoding = resp.getheader('Content-Encoding', '')
             try:
                 if encoding == 'br' and HAS_BROTLI:
-                    # Brotli 解压
                     data = brotli.decompress(data)
                 elif encoding == 'gzip' or data[:2] == b'\x1f\x8b':
                     data = gzip.decompress(data)
                 elif encoding == 'deflate':
                     data = zlib.decompress(data, -zlib.MAX_WBITS)
                 elif data[:1] == b'\x1b':
-                    # 尝试 Brotli 解压（某些服务器不设置 Content-Encoding）
                     if HAS_BROTLI:
                         try:
                             data = brotli.decompress(data)
                         except:
                             pass
             except Exception:
-                pass  # 如果解压失败，使用原始数据
+                pass
 
             # 尝试多种编码
             for enc in ['utf-8', 'gbk', 'gb2312', 'latin-1']:
@@ -247,10 +344,9 @@ def _http_get(host, path, params=None, timeout=15, retries=3, use_cache=True):
                     text = data.decode(enc)
                     result = json.loads(text)
                     break
-                except (UnicodeDecodeError, json.JSONDecodeError) as e:
+                except (UnicodeDecodeError, json.JSONDecodeError):
                     continue
             else:
-                # 如果所有编码都失败，使用 latin-1（不会失败）
                 text = data.decode('latin-1')
                 result = json.loads(text)
 
@@ -258,7 +354,11 @@ def _http_get(host, path, params=None, timeout=15, retries=3, use_cache=True):
             if use_cache and result:
                 _set_cache(cache_key, result)
 
+            # 成功 → 清除该 Host 的错误计数
+            _clear_host_error(host)
+
             return result
+
         except Exception as e:
             last_err = e
             if conn:
@@ -266,21 +366,34 @@ def _http_get(host, path, params=None, timeout=15, retries=3, use_cache=True):
                     conn.close()
                 except:
                     pass
+
+            # 连接拒绝类错误 → 标记 Host 错误，不重试
+            if _is_connection_error(e):
+                if attempt == 0:
+                    _mark_host_error(host)
+                    cooldown = _check_host_cooldown(host)
+                    if cooldown > 0:
+                        print(f"  [保护] {host} 连接被拒绝，进入 {cooldown:.0f} 秒冷却期")
+                # 连接拒绝类错误不重试，直接抛异常
+                raise last_err
+
+            # 其他错误（如 JSON 解析失败）→ 指数退避重试
             if attempt < retries - 1:
-                # 指数退避 + 随机抖动（连接断开时等待更久）
-                base_wait = 3.0 ** attempt + 2.0
-                jitter = random.uniform(1.0, 3.0)
-                wait_time = base_wait + jitter
+                wait_time = (2.0 ** (attempt + 1)) + random.uniform(1.0, 2.0)
                 time.sleep(wait_time)
                 continue
+
     raise last_err
 
 
-def _http_get_safe(host, path, params=None, timeout=15, retries=3, default=None, use_cache=True):
+def _http_get_safe(host, path, params=None, timeout=15, retries=2, default=None, use_cache=True):
     """安全版 _http_get，失败返回默认值而非抛异常"""
     try:
         return _http_get(host, path, params, timeout, retries, use_cache)
-    except Exception:
+    except Exception as e:
+        # 连接拒绝类错误 → 不打印堆栈，仅输出简洁提示
+        if _is_connection_error(e):
+            print(f"  [跳过] {host} 暂时不可用，返回默认值")
         return default if default is not None else {}
 
 
@@ -343,23 +456,25 @@ def print_request_stats():
     hits = stats["cache_hits"]
     duration = stats["session_duration"]
 
+    remaining = max(0, _SESSION_HARD_LIMIT - total)
+
     print(f"\n{'─'*40}")
     print(f"  [统计] API 请求统计")
-    print(f"  实际请求数: {total}")
+    print(f"  实际请求数: {total} / {_SESSION_HARD_LIMIT}（剩余 {remaining} 次额度）")
     print(f"  缓存命中数: {hits}")
     print(f"  会话时长: {duration:.1f} 秒")
-
-    # 建议提示
-    if total > 100:
-        print(f"  [警告] 请求次数过多，建议间隔 10 分钟以上再继续分析")
-    elif total > 50:
-        print(f"  [注意] 请求次数偏多，建议适当控制分析频率")
-    else:
-        print(f"  [OK] 请求次数在安全范围内")
+    print(f"  请求频率: 每分钟 ≤{_max_requests_per_minute} 次，间隔 {_min_request_interval}-{_max_request_interval} 秒")
 
     # 交易日提示
     if not is_trading_day():
-        print(f"  [提示] 今天不是交易日，数据为最近交易日的快照")
+        print(f"  [提示] 今天不是交易日，数据为最近交易日的快照，请求频率已自动降低")
+
+    # Host 冷却状态
+    if _host_cooldown_until:
+        active = [(h, max(0, int(t - time.time()))) for h, t in _host_cooldown_until.items() if t > time.time()]
+        if active:
+            for host, remaining_sec in active:
+                print(f"  [保护] {host} 冷却中（剩余 {remaining_sec} 秒）")
     print(f"{'─'*40}")
 
 

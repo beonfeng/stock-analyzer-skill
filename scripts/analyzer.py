@@ -5,6 +5,7 @@
 """
 
 import datetime
+import time
 from pathlib import Path
 from typing import Dict, Any
 
@@ -1572,6 +1573,19 @@ def generate_report(code, name, df, indicators, fund_flow, north_flow, quote, ne
 # ============================================================
 
 def analyze_stock(code, output_dir="."):
+    # 分析间冷却保护：连续调用时强制间隔
+    global _last_analysis_time
+    try:
+        _last_analysis_time
+    except NameError:
+        _last_analysis_time = 0
+    elapsed_since_last = time.time() - _last_analysis_time
+    if elapsed_since_last < 15:
+        wait = 15 - elapsed_since_last
+        print(f"  [冷却] 距离上次分析仅 {elapsed_since_last:.0f} 秒，等待 {wait:.0f} 秒...")
+        time.sleep(wait)
+    _last_analysis_time = time.time()
+
     # 重置会话请求统计
     reset_request_stats()
 
@@ -1595,7 +1609,13 @@ def analyze_stock(code, output_dir="."):
     out_path.mkdir(parents=True, exist_ok=True)
     print(f"  输出目录: {out_path}")
 
-    print("\n[1/12] 获取 K 线数据...")
+    # 预估请求数
+    estimated_requests = 13 if us_mode else 26
+    print(f"  [预估] 本次分析预计发送约 {estimated_requests} 次 API 请求（含行业对比数据）")
+    print(f"  [限制] 每分钟 ≤12 次，会话上限 60 次，超过自动冷却")
+    print()
+
+    print("[1/12] 获取 K 线数据...")
     df_hist = fetch_kline(code, days=500)
     print(f"  获取到 {len(df_hist)} 条 K 线数据")
 
