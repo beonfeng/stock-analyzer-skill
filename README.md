@@ -14,7 +14,7 @@
 
 | 痛点 | 本方案 |
 |------|--------|
-| 手动看盘费时费力 | 输入代码，12 步数据流水线自动完成 |
+| 手动看盘费时费力 | 输入代码，13 步数据流水线自动完成 |
 | 单一维度分析容易误判 | 16 个维度交叉验证，减少盲区 |
 | 只告诉你买什么 | **反证清单**告诉你什么情况会打脸 |
 | 止损全靠感觉 | ATR 动态止损，自动适配 10%/20%/30% 涨跌停板 |
@@ -43,13 +43,14 @@
 └─────────────────────────────────────────────────────────┘
 ```
 
-### 三大模式
+### 四大模式
 
 | 模式 | 说明 | 命令示例 |
 |------|------|----------|
 | 📊 **单股分析** | 16 章节完整报告 | `美的集团` |
 | ⚖️ **双股对比** | 7 维度横向 PK | `compare 贵州茅台 五粮液` |
 | 🏭 **板块分析** | 10 大板块 × 5 只龙头 | `sector 白酒` |
+| 📡 **反证监控** | 追踪报告中的反证条件 | `monitor` / `monitor 000333` |
 
 ---
 
@@ -85,7 +86,11 @@ python stock_analyzer.py compare 贵州茅台 五粮液
 # 板块分析（白酒/新能源/半导体/银行/医药/消费/科技/地产/军工/汽车）
 python stock_analyzer.py sector 白酒
 
-# 指定输出目录
+# 反证清单监控
+python stock_analyzer.py monitor
+python stock_analyzer.py monitor 000333 600519
+
+# 指定输出目录（报告统一保存到 分析报告/ 子目录）
 python stock_analyzer.py -o ./reports 600519
 ```
 
@@ -122,21 +127,27 @@ pip install -r requirements.txt
 
 ```text
 stock-analyzer-skill/
-├── stock_analyzer.py          # 入口文件（CLI 分发）
-├── scripts/                   # 核心模块
-│   ├── analyzer.py            # 主引擎：API 调用 + 指标计算 + 报告生成
-│   ├── technical_indicators.py # 扩展指标：RSI 背离、MACD 柱量、K 线形态
-│   ├── valuation_analysis.py  # 估值百分位：PE/PB/股息率 5 年分位
-│   ├── industry_analysis.py   # 行业对比：估值排名、资金流向、龙头溢价
-│   ├── risk_control.py        # 风控：动态止损、支撑压力、仓位计算
-│   ├── comparison.py          # 双股对比 + 板块分析
-│   ├── sentiment.py           # 新闻情感分析
-│   ├── market_utils.py        # 市场识别（沪/深/港）
-│   └── utils.py               # HTTP 客户端（直连、重试、代理绕过）
-├── tests/                     # 240+ 测试用例
-├── templates/                 # 报告模板（16 章节）
-├── references/                # 技术指标 & 财务指标参考文档
-└── 分析报告/                   # 报告输出目录（运行脚本自动生成）
+├── stock_analyzer.py            # 入口文件（CLI 分发 / 单股 / 对比 / 板块 / 监控）
+├── requirements.txt             # Python 依赖（pandas + numpy）
+├── CHANGELOG.md                 # 版本更新日志
+├── scripts/                     # 核心模块
+│   ├── analyzer.py              # 主引擎：API 调用 + 指标计算 + 报告生成
+│   ├── comparison.py            # 双股对比 + 板块分析
+│   ├── monitor.py               # 反证清单监控
+│   ├── exporter.py              # HTML / PDF 导出
+│   ├── technical_indicators.py  # 扩展指标：RSI 背离、MACD 柱量、K 线形态
+│   ├── valuation_analysis.py    # 估值百分位：PE/PB/股息率 5 年分位
+│   ├── industry_analysis.py     # 行业对比：估值排名、资金流向、龙头溢价
+│   ├── risk_control.py          # 风控：动态止损、支撑压力、仓位计算
+│   ├── sentiment.py             # 新闻情感分析
+│   ├── us_stock.py              # 美股数据获取
+│   ├── market_utils.py          # 市场识别（沪/深/港/美）
+│   └── utils.py                 # HTTP 客户端（直连、重试、代理绕过）
+├── tests/                       # 240+ 测试用例
+├── templates/                   # 报告模板（16 章节）
+├── references/                  # 技术指标 & 财务指标参考文档
+├── docs/                        # 设计文档 & 开发计划
+└── 分析报告/                     # 报告输出目录（脚本自动生成，gitignore）
 ```
 
 ---

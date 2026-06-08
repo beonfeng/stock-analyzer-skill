@@ -19,6 +19,7 @@ pip-delete-this-directory.txt
 
 # Claude Code
 .claude/
+CLAUDE.md
 
 # OS
 .DS_Store
