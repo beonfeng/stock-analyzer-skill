@@ -141,8 +141,10 @@ def cmd_compare(args):
         if args.output:
             from pathlib import Path
             today = datetime.date.today().strftime("%Y%m%d")
+            out_dir = Path(args.output) / "分析报告"
+            out_dir.mkdir(parents=True, exist_ok=True)
             filename = f"对比-{name_a}vs{name_b}-{today}.md"
-            filepath = Path(args.output) / filename
+            filepath = out_dir / filename
             filepath.write_text(report, encoding="utf-8")
             print(f"\n报告已保存: {filepath}")
 
@@ -290,8 +292,10 @@ def cmd_sector(args):
         if args.output:
             from pathlib import Path
             today = datetime.date.today().strftime("%Y%m%d")
+            out_dir = Path(args.output) / "分析报告"
+            out_dir.mkdir(parents=True, exist_ok=True)
             filename = f"板块-{sector_name}-{today}.md"
-            filepath = Path(args.output) / filename
+            filepath = out_dir / filename
             filepath.write_text(report, encoding="utf-8")
             print(f"\n报告已保存: {filepath}")
 
@@ -333,8 +337,10 @@ def cmd_monitor(args):
             from pathlib import Path
             report_full = format_monitor_report(data, use_emoji=True)
             today = datetime.date.today().strftime("%Y%m%d")
+            out_dir = Path(args.output) / "分析报告"
+            out_dir.mkdir(parents=True, exist_ok=True)
             filename = f"监控报告-{today}.md"
-            filepath = Path(args.output) / filename
+            filepath = out_dir / filename
             filepath.write_text(report_full, encoding="utf-8")
             print(f"\n监控报告已保存: {filepath}")
 
@@ -483,10 +489,11 @@ def main():
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 输出说明:
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  分析报告保存到: 分析报告/股票代码-股票名称-分析报告-日期.md
-  对比报告保存到: 对比-名称A vs 名称B-日期.md
-  板块报告保存到: 板块-板块名称-日期.md
-  监控报告保存到: 监控报告-日期.md
+  所有报告统一保存到: 分析报告/ 目录下（由 --output 指定父目录）
+  分析报告: 分析报告/<code>-<name>-分析报告-YYYYMMDD.md
+  对比报告: 分析报告/对比-<名称A>vs<名称B>-YYYYMMDD.md
+  板块报告: 分析报告/板块-<板块名称>-YYYYMMDD.md
+  监控报告: 分析报告/监控报告-YYYYMMDD.md
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
         """
     )

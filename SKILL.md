@@ -7,7 +7,7 @@ description: Use when the user asks to analyze a stock, industry, or sector — 
 
 ## Overview
 
-基于东方财富 API 直连，对 A 股个股进行多维度综合分析，生成结构化 Markdown 报告。输出目录为 `股票代码-股票名称/`，包含技术面、资金面、基本面、财务排雷、反证清单等分析。
+基于东方财富 API 直连，对 A 股个股进行多维度综合分析，生成结构化 Markdown 报告。输出目录为 `分析报告/`，包含技术面、资金面、基本面、财务排雷、反证清单等分析。
 
 ## When to Use
 
@@ -169,7 +169,7 @@ python stock_analyzer.py 000001
 python stock_analyzer.py 000001 600519 000858
 ```
 
-脚本自动在当前工作目录下创建 `股票代码-股票名称/` 文件夹，内含综合分析报告。
+脚本自动在当前工作目录下创建 `分析报告/` 文件夹，内含综合分析报告。
 
 ### 2. 双股对比
 
@@ -253,19 +253,20 @@ stock-analyzer-skill/
 │   ├── test_comparison.py
 │   ├── test_risk_control.py
 │   └── test_sentiment.py
-├── template.md                  # 简单模板说明
 ├── templates/
 │   └── report-template.md       # 完整报告模板
 ├── references/
 │   ├── technical-indicators.md  # 技术指标说明
 │   ├── financial-metrics.md     # 财务指标说明
 │   └── data-sources.md          # 数据源说明
-├── examples/
-│   ├── 000333-美的集团.md       # 美的集团分析示例
-│   ├── 600519-贵州茅台.md       # 贵州茅台分析示例
-│   └── 300750-宁德时代.md       # 宁德时代分析示例
-└── docs/
-    └── api-reference.md         # API 参考文档
+├── docs/
+│   ├── api-reference.md         # API 参考文档
+│   ├── plans/                   # 开发计划
+│   └── specs/                   # 设计文档
+└── 分析报告/                     # 报告输出目录（gitignore）
+    ├── <code>-<name>-分析报告-YYYYMMDD.md
+    ├── 对比-<nameA>vs<nameB>-YYYYMMDD.md
+    └── 板块-<name>-YYYYMMDD.md
 ```
 
 ## 技术指标说明
