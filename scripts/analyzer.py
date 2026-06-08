@@ -1389,7 +1389,7 @@ def analyze_stock(code, output_dir="."):
         support_resistance, position, risk_check, sentiment_result
     )
     today = datetime.date.today().strftime("%Y%m%d")
-    report_file = out_path / f"{code}-{name}-分析报告-{today}.md"
+    report_file = (out_path / f"{code}-{name}-分析报告-{today}.md").resolve()
     report_file.write_text(report, encoding="utf-8")
     print(f"  [OK] {report_file.name}")
 
