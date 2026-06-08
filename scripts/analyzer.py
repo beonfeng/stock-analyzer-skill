@@ -265,6 +265,114 @@ def fetch_financial_report(code):
         return []
 
 
+def fetch_company_profile(code):
+    """
+    获取公司概况：基本资料 + 主营业务构成。
+
+    Args:
+        code: 股票代码（如 '603195'）
+
+    Returns:
+        dict: {
+            '基本信息': dict,   # 公司名称、行业、上市日期、员工数等
+            '公司简介': str,     # 公司简介文字
+            '经营范围': str,     # 经营范围文字
+            '主营业务': list,    # [{'名称': str, '收入': float, '占比': float, '毛利率': float}, ...]
+        }
+    """
+    result = {
+        '基本信息': {},
+        '公司简介': '',
+        '经营范围': '',
+        '主营业务': [],
+    }
+
+    try:
+        market_code, _, _ = get_market_info(code)
+        # 港股接口不同，暂不支持
+        if market_code == 'HK':
+            return result
+    except ValueError:
+        return result
+
+    secucode = f"{code}.{'SH' if market_code == 'SH' else 'SZ'}"
+
+    # 1. 获取公司基本资料
+    try:
+        params1 = {
+            'code': f"{'SH' if market_code == 'SH' else 'SZ'}{code}",
+            'client_source': 'web',
+        }
+        j1 = _http_get_safe(
+            'emweb.securities.eastmoney.com',
+            '/PC_HSF10/CompanySurvey/CompanySurveyAjax',
+            params1, retries=3
+        )
+        if j1 and isinstance(j1, dict):
+            jbzl = j1.get('jbzl', {})
+            fxxg = j1.get('fxxg', {})
+
+            result['基本信息'] = {
+                '公司名称': jbzl.get('gsmc', ''),
+                '英文名称': jbzl.get('ywmc', ''),
+                '所属行业': jbzl.get('sshy', ''),
+                '证监会行业': jbzl.get('sszjhhy', ''),
+                '法人代表': jbzl.get('frdb', ''),
+                '董事长': jbzl.get('dsz', ''),
+                '总经理': jbzl.get('zjl', ''),
+                '注册资本': jbzl.get('zczb', ''),
+                '员工人数': jbzl.get('gyrs', ''),
+                '上市日期': fxxg.get('ssrq', ''),
+                '成立日期': fxxg.get('clrq', ''),
+            }
+            result['公司简介'] = jbzl.get('gsjj', '').strip()
+            result['经营范围'] = jbzl.get('jyfw', '').strip()
+    except Exception:
+        pass
+
+    # 2. 获取主营业务构成
+    try:
+        params2 = {
+            'type': 'RPT_F10_FN_MAINOP',
+            'sty': 'ALL',
+            'filter': f'(SECUCODE="{secucode}")',
+            'p': '1', 'ps': '50',
+            'sr': '-1', 'st': 'REPORT_DATE',
+            'source': 'HSF10', 'client': 'PC',
+        }
+        j2 = _http_get_safe('datacenter.eastmoney.com', '/api/data/get', params2, retries=3)
+        if j2 and isinstance(j2, dict) and j2.get('result'):
+            items = j2['result'].get('data', [])
+            if items:
+                # 按报告日期分组，取最新一期
+                from collections import defaultdict
+                by_date = defaultdict(list)
+                for item in items:
+                    date = item.get('REPORT_DATE', '')[:10]
+                    by_date[date].append(item)
+
+                latest_date = max(by_date.keys())
+                latest_items = by_date[latest_date]
+                total_income = sum(it.get('MAIN_BUSINESS_INCOME', 0) for it in latest_items)
+
+                for it in sorted(latest_items, key=lambda x: x.get('MAIN_BUSINESS_INCOME', 0), reverse=True):
+                    name = it.get('ITEM_NAME', '')
+                    income = it.get('MAIN_BUSINESS_INCOME', 0)
+                    ratio = (income / total_income * 100) if total_income > 0 else 0
+                    gross = it.get('GROSS_RPOFIT_RATIO', 0)
+                    result['主营业务'].append({
+                        '名称': name,
+                        '收入': income / 1e8,  # 转为亿元
+                        '占比': ratio,
+                        '毛利率': gross,
+                        '报告期': latest_date,
+                    })
+    except Exception:
+        pass
+
+    return result
+
+
 # 常见股票名称映射（网络不稳定时的备用方案）
 _STOCK_NAMES = {
     "000001": "平安银行", "000002": "万科A", "000063": "中兴通讯",
@@ -635,7 +743,7 @@ def generate_report(code, name, df, indicators, fund_flow, north_flow, quote, ne
                     valuation_percentile=None, industry_comparison=None,
                     weighted_score=None, stop_loss=None, target=None,
                     support_resistance=None, position=None, risk_check=None,
-                    sentiment_result=None):
+                    sentiment_result=None, company_profile=None):
     """生成单个综合分析报告"""
     L = []
     now = datetime.datetime.now().strftime('%Y-%m-%d %H:%M')
@@ -645,6 +753,54 @@ def generate_report(code, name, df, indicators, fund_flow, north_flow, quote, ne
     L.append(f"# {name}（{code}）股票分析报告")
     L.append(f"\n> 生成时间：{now}")
     L.append(f"> 数据区间：{df['日期'].iloc[0]} ~ {df['日期'].iloc[-1]}，共 {len(df)} 个交易日\n")
+
+    # ── 公司概况 ──
+    if company_profile:
+        L.append("---\n## 公司概况\n")
+
+        # 基本信息
+        info = company_profile.get('基本信息', {})
+        if info:
+            L.append("### 基本信息\n")
+            L.append("| 项目 | 内容 |")
+            L.append("|------|------|")
+            for label, key in [
+                ("公司名称", "公司名称"),
+                ("英文名称", "英文名称"),
+                ("所属行业", "所属行业"),
+                ("证监会行业", "证监会行业"),
+                ("法人代表", "法人代表"),
+                ("董事长", "董事长"),
+                ("总经理", "总经理"),
+                ("注册资本", "注册资本"),
+                ("员工人数", "员工人数"),
+                ("上市日期", "上市日期"),
+                ("成立日期", "成立日期"),
+            ]:
+                val = info.get(key, '')
+                if val:
+                    L.append(f"| {label} | {val} |")
+            L.append("")
+
+        # 公司简介
+        desc = company_profile.get('公司简介', '')
+        if desc:
+            L.append("### 公司简介\n")
+            L.append(f"{desc}\n")
+
+        # 主营业务构成
+        biz = company_profile.get('主营业务', [])
+        if biz:
+            L.append("### 主营业务构成\n")
+            L.append("| 业务 | 收入(亿) | 占比 | 毛利率 |")
+            L.append("|------|----------|------|--------|")
+            for item in biz:
+                name_str = item.get('名称', '')
+                income = item.get('收入', 0)
+                ratio = item.get('占比', 0)
+                gross = item.get('毛利率', 0)
+                L.append(f"| {name_str} | {income:.2f} | {ratio:.2f}% | {gross:.2f}% |")
+            L.append("")
 
     # ── 总结 ──
     L.append("---\n## 总结\n")
@@ -1310,17 +1466,20 @@ def analyze_stock(code, output_dir="."):
         print("[6/12] 获取财务报表数据...")
         financial_data = fetch_financial_report(code)
 
-    print("[7/12] 计算技术指标...")
+    print("[7/12] 获取公司概况...")
+    company_profile = fetch_company_profile(code)
+
+    print("[8/13] 计算技术指标...")
     indicators = calculate_indicators(df_hist)
 
     # 计算扩展技术指标
     print("  计算扩展指标（RSI 背离、MACD 柱状图等）...")
     extended_indicators = calculate_extended_indicators(df_hist, indicators)
 
-    print("[8/12] 计算加权信号评分...")
+    print("[9/13] 计算加权信号评分...")
     weighted_score = calculate_weighted_score(indicators)
 
-    print("[9/12] 计算动态止损/目标位...")
+    print("[10/13] 计算动态止损/目标位...")
     price = indicators.get("最新价", 0)
     # 美股使用 main 板型（无涨跌幅限制，但计算逻辑兼容）
     board_type = "main" if us_mode else detect_board_type(code)
@@ -1334,10 +1493,10 @@ def analyze_stock(code, output_dir="."):
         stop_loss=stop_loss["stop_loss"]
     )
 
-    print("[10/12] 计算支撑压力位...")
+    print("[11/13] 计算支撑压力位...")
     support_resistance = calc_support_resistance(df_hist, price, indicators)
 
-    print("[11/12] 计算仓位建议和风控检查...")
+    print("[12/13] 计算仓位建议和风控检查...")
     position = calc_position_size(
         direction=weighted_score["direction"],
         score=weighted_score["score"],
@@ -1354,7 +1513,7 @@ def analyze_stock(code, output_dir="."):
     )
 
     if us_mode:
-        print("[12/12] 新闻情感... [N/A 美股不适用]")
+        print("[13/13] 新闻情感... [N/A 美股不适用]")
         sentiment_result = {"score": 0, "label": "N/A", "positive": 0, "negative": 0, "neutral": 0}
 
         print("\n计算财务健康指标和投资评级...")
@@ -1367,7 +1526,7 @@ def analyze_stock(code, output_dir="."):
         print("行业对比... [N/A 美股不适用]")
         industry_comparison = None
     else:
-        print("[12/12] 分析新闻情感...")
+        print("[13/13] 分析新闻情感...")
         sentiment_result = analyze_sentiment(news_df.to_dict("records") if not news_df.empty else [])
 
         print("\n计算财务健康指标和投资评级...")
@@ -1386,7 +1545,8 @@ def analyze_stock(code, output_dir="."):
         quote, news_df, industry_df, financial_health, rating,
         extended_indicators, valuation_percentile, industry_comparison,
         weighted_score, stop_loss, target,
-        support_resistance, position, risk_check, sentiment_result
+        support_resistance, position, risk_check, sentiment_result,
+        company_profile
     )
     today = datetime.date.today().strftime("%Y%m%d")
     report_file = (out_path / f"{code}-{name}-分析报告-{today}.md").resolve()
