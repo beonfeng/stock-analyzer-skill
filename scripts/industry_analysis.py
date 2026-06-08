@@ -90,8 +90,8 @@ def _find_industry_from_board(code, market_code):
         return ""
 
     boards = j.get("data", {}).get("diff", [])
-    # 遍历行业板块，查找股票所属行业
-    for board in boards:
+    # 遍历行业板块，查找股票所属行业（限制最多遍历 30 个板块，避免过多请求）
+    for board in boards[:30]:
         board_code = board.get("f12", "")
         if not board_code:
             continue
@@ -274,9 +274,12 @@ def analyze_fund_flow_comparison(code, peers):
     if not peers:
         return {'今日排名': [], '5日排名': []}
 
+    # 限制请求数量：只取市值前 15 名，避免大量 API 请求导致被限流
+    top_peers = sorted(peers, key=lambda x: x.get('总市值', 0), reverse=True)[:15]
+
     # 获取行业内各股票的资金流向
     flow_data = []
-    for peer in peers:
+    for peer in top_peers:
         peer_code = peer['代码']
         peer_name = peer['名称']
 

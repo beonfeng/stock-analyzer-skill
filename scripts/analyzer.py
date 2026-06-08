@@ -1253,15 +1253,23 @@ def generate_report(code, name, df, indicators, fund_flow, north_flow, quote, ne
 # ============================================================
 
 def analyze_stock(code, output_dir="."):
+    # 重置会话请求统计
+    reset_request_stats()
+
     print(f"\n{'='*60}")
     print(f"  分析股票: {code}")
     print(f"{'='*60}")
+
+    # 交易日检查
+    if not is_trading_day():
+        print("  📅 今天不是交易日，数据为最近交易日的快照")
 
     us_mode = is_us_stock(code)
     if us_mode:
         print("  市场类型: 美股（通过东方财富 API 获取数据）")
 
-    name = get_stock_name(code)
+    # 使用 return_quote=True 避免后续重复请求
+    name, quote = get_stock_name(code, return_quote=True)
     print(f"  股票名称: {name}")
 
     out_path = Path(output_dir) / "分析报告"
@@ -1272,8 +1280,7 @@ def analyze_stock(code, output_dir="."):
     df_hist = fetch_kline(code, days=500)
     print(f"  获取到 {len(df_hist)} 条 K 线数据")
 
-    print("[2/12] 获取实时行情...")
-    quote = fetch_realtime_quote(code)
+    print("[2/12] 获取实时行情... [复用已有数据，无额外请求]")
 
     if us_mode:
         # 美股：跳过东方财富专属数据
@@ -1368,7 +1375,7 @@ def analyze_stock(code, output_dir="."):
         rating = calculate_rating(indicators, financial_health, fund_flow)
 
         print("分析估值分位数...")
-        valuation_percentile = analyze_valuation_percentile(code, quote, years=5)
+        valuation_percentile = analyze_valuation_percentile(code, quote, years=5, kline_data=df_hist)
 
         print("分析行业对比...")
         industry_comparison = analyze_industry_comparison(code)
@@ -1385,6 +1392,9 @@ def analyze_stock(code, output_dir="."):
     report_file = out_path / f"{code}-{name}-分析报告-{today}.md"
     report_file.write_text(report, encoding="utf-8")
     print(f"  [OK] {report_file.name}")
+
+    # 打印请求统计
+    print_request_stats()
 
     print(f"\n分析完成! 报告已保存至: {report_file}")
     return str(report_file)
@@ -1597,9 +1607,10 @@ def compare_stocks_wrapper(code_a: str, code_b: str) -> Dict[str, Any]:
     Returns:
         dict: 对比分析结果
     """
-    # 获取股票 A 数据
-    name_a = get_stock_name(code_a)
-    quote_a = fetch_realtime_quote(code_a)
+    reset_request_stats()
+
+    # 获取股票 A 数据（复用 quote，避免重复请求）
+    name_a, quote_a = get_stock_name(code_a, return_quote=True)
     df_a = fetch_kline(code_a, days=120)
     indicators_a = calculate_indicators(df_a)
     rating_a = calculate_rating(indicators_a, {}, {})
@@ -1608,17 +1619,16 @@ def compare_stocks_wrapper(code_a: str, code_b: str) -> Dict[str, Any]:
         "code": code_a,
         "name": name_a,
         "price": indicators_a.get("最新价", 0),
-        "pe": quote_a.get("f9", 0),
-        "pb": quote_a.get("f23", 0),
-        "market_cap": safe_num(quote_a.get("f20", 0)),
+        "pe": quote_a.get("f9", 0) if quote_a else 0,
+        "pb": quote_a.get("f23", 0) if quote_a else 0,
+        "market_cap": safe_num(quote_a.get("f20", 0)) if quote_a else 0,
         "change_pct": indicators_a.get("涨跌幅_今日", 0),
         "indicators": indicators_a,
         "rating": rating_a,
     }
 
-    # 获取股票 B 数据
-    name_b = get_stock_name(code_b)
-    quote_b = fetch_realtime_quote(code_b)
+    # 获取股票 B 数据（复用 quote，避免重复请求）
+    name_b, quote_b = get_stock_name(code_b, return_quote=True)
     df_b = fetch_kline(code_b, days=120)
     indicators_b = calculate_indicators(df_b)
     rating_b = calculate_rating(indicators_b, {}, {})
@@ -1627,14 +1637,15 @@ def compare_stocks_wrapper(code_a: str, code_b: str) -> Dict[str, Any]:
         "code": code_b,
         "name": name_b,
         "price": indicators_b.get("最新价", 0),
-        "pe": quote_b.get("f9", 0),
-        "pb": quote_b.get("f23", 0),
-        "market_cap": safe_num(quote_b.get("f20", 0)),
+        "pe": quote_b.get("f9", 0) if quote_b else 0,
+        "pb": quote_b.get("f23", 0) if quote_b else 0,
+        "market_cap": safe_num(quote_b.get("f20", 0)) if quote_b else 0,
         "change_pct": indicators_b.get("涨跌幅_今日", 0),
         "indicators": indicators_b,
         "rating": rating_b,
     }
 
+    print_request_stats()
     return compare_two_stocks(stock_a, stock_b)
 
 
@@ -1655,9 +1666,8 @@ def analyze_sector_wrapper(sector_name: str) -> Dict[str, Any]:
     stocks = []
     for code in codes:
         try:
-            name = get_stock_name(code)
-            quote = fetch_realtime_quote(code)
-            change_pct = safe_num(quote.get("f3", 0))
+            name, quote = get_stock_name(code, return_quote=True)
+            change_pct = safe_num(quote.get("f3", 0)) if quote else 0
             stocks.append({
                 "code": code,
                 "name": name,

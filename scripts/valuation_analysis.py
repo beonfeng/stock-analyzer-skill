@@ -175,7 +175,7 @@ def fetch_historical_valuation(code, years=5):
     return result
 
 
-def analyze_valuation_percentile(code, current_quote, years=5):
+def analyze_valuation_percentile(code, current_quote, years=5, kline_data=None):
     """
     估值分位数分析主函数。
 
@@ -190,6 +190,7 @@ def analyze_valuation_percentile(code, current_quote, years=5):
         current_quote: 当前行情字典（来自 fetch_realtime_quote）
             需包含 'f9'（PE）、'f23'（PB）等字段
         years: 历史回溯年数（默认 5）
+        kline_data: 已获取的 K 线 DataFrame（可选），提供时避免重复请求
 
     Returns:
         dict: {
@@ -207,8 +208,12 @@ def analyze_valuation_percentile(code, current_quote, years=5):
     f115 = current_quote.get("f115")
     current_dividend = _safe_float(f115 if f115 is not None else current_quote.get("f163", 0))
 
-    # 2. 获取历史估值数据
-    historical = fetch_historical_valuation(code, years=years)
+    # 2. 获取历史估值数据（如果已提供 kline_data，跳过重复请求）
+    if kline_data is not None and not kline_data.empty:
+        # 已有 K 线数据，直接使用（当前 API 不返回 PE/PB 历史序列，返回空结果）
+        historical = {'PE': [], 'PB': [], '股息率': []}
+    else:
+        historical = fetch_historical_valuation(code, years=years)
 
     # 3. 计算分位数和区间
     result = {}
