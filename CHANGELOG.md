@@ -17,12 +17,14 @@
 
 ### 新增
 
+- **资讯数据源**：原新闻 API（np-listapi.eastmoney.com）已下线（404），替换为研报 API（reportapi.eastmoney.com）+ 公告 API（np-anotice-stock.eastmoney.com），报告中标注 `[研报]`/`[公告]` 来源
 - **北交所支持**：识别 8 开头的北交所代码（如 830799），正确处理价格除数
 - **美股修复**：修复美股价格除数错误（1000→1），AAPL 等价格不再被错误除以 1000
 - **情感分析加权**：关键词改为权重字典（涨停=3、利好=2 等），长词优先匹配，返回匹配关键词详情
 
 ### 修复
 
+- **行业板块数据获取失败**：`82.push2.eastmoney.com` 不稳定（频繁 RemoteDisconnected），切换为 `push2.eastmoney.com`
 - **严重**：`generate_enhanced_comparison_report` 中 PE/PB/市值格式化前未做 `safe_num` 转换，API 返回异常值时崩溃
 - **严重**：`cmd_compare` 始终传空 `financial_data` 给 `calculate_financial_health`，财务报表数据从未使用
 - `cmd_sector` 中 `fund_flow` 为 None 时 `.get()` 崩溃

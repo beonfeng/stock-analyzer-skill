@@ -148,7 +148,7 @@ def fetch_realtime_quote(code):
             "fs": "m:0+t:6,m:0+t:80,m:1+t:2,m:1+t:23,m:0+t:81+s:2048",
             "fields": "f1,f2,f3,f4,f5,f6,f7,f8,f9,f10,f12,f13,f14,f15,f16,f17,f18,f20,f21,f23,f24,f25,f22,f11,f62,f128,f136,f115,f152",
         }
-        j = _http_get_safe("82.push2.eastmoney.com", "/api/qt/clist/get", params)
+        j = _http_get_safe("push2.eastmoney.com", "/api/qt/clist/get", params)
         items = j.get("data", {}).get("diff", []) if j else []
         for item in items:
             if str(item.get("f12", "")) == code:
@@ -218,26 +218,64 @@ def fetch_north_flow():
 
 
 def fetch_stock_news(code):
-    """获取个股新闻"""
+    """获取个股资讯（研报 + 公告，替代已下线的新闻 API）"""
+    rows = []
+    # 来源1：个股研报（reportapi 稳定可用）
     try:
-        host = "np-listapi.eastmoney.com"
-        path = f"/api/news/get"
-        params = {"page_index": "1", "page_size": "20", "columns": "title,source,publish_date",
-                  "source": "web", "client": "web", "biz": "web_news_col",
-                  "column": "350", "filter": f'(code="{code}")'}
-        j = _http_get(host, path, params)
-        items = j.get("data", {}).get("list", [])
-        rows = []
-        for item in items:
-            rows.append({
-                "新闻标题": item.get("title", ""),
-                "发布时间": item.get("publish_date", ""),
-                "文章来源": item.get("source", ""),
-            })
-        return pd.DataFrame(rows)
+        params = {
+            "industryCode": "*", "pageSize": "15", "industry": "*",
+            "rating": "*", "ratingChange": "*",
+            "beginTime": (datetime.date.today() - datetime.timedelta(days=90)).strftime("%Y-%m-%d"),
+            "endTime": datetime.date.today().strftime("%Y-%m-%d"),
+            "pageNo": "1", "fields": "", "qType": "0",
+            "orgCode": "", "code": code, "rcode": "",
+            "p": "1", "pageNum": "1", "pageNumber": "1"
+        }
+        j = _http_get("reportapi.eastmoney.com", "/report/list", params)
+        data = j.get("data", []) if isinstance(j, dict) else []
+        if isinstance(data, list):
+            for item in data[:10]:
+                title = item.get("title", "") or item.get("infoCode", "")
+                org = item.get("orgSName", "") or item.get("orgName", "")
+                pub_date = item.get("publishDate", "")[:10]
+                if title:
+                    rows.append({
+                        "新闻标题": f"[研报] {title}",
+                        "发布时间": pub_date,
+                        "文章来源": org,
+                    })
     except Exception as e:
-        print(f"  [警告] 新闻数据获取失败: {e}")
-        return pd.DataFrame()
+        print(f"  [警告] 研报数据获取失败: {e}")
+
+    # 来源2：公司公告（np-anotice-stock 稳定可用）
+    try:
+        market_code, _, _ = get_market_info(code)
+        ann_type_map = {"SH": "SHA", "SZ": "SZA", "BJ": "BJA"}
+        ann_type = ann_type_map.get(market_code, "SHA,SZA")
+        params = {
+            "sr": "-1", "page_size": "10", "page_index": "1",
+            "ann_type": ann_type, "client_source": "web",
+            "stock_list": code, "f_node": "0", "s_node": "0"
+        }
+        j = _http_get("np-anotice-stock.eastmoney.com", "/api/security/ann", params)
+        data = j.get("data", {}).get("list", []) if isinstance(j, dict) else []
+        for item in data[:10]:
+            title = item.get("title", "") or item.get("noticeTitle", "")
+            pub_date = item.get("noticeDate", "")[:10]
+            if title:
+                rows.append({
+                    "新闻标题": f"[公告] {title}",
+                    "发布时间": pub_date,
+                    "文章来源": "巨潮资讯",
+                })
+    except Exception as e:
+        print(f"  [警告] 公告数据获取失败: {e}")
+
+    if rows:
+        print(f"  获取到 {len(rows)} 条资讯（研报+公告）")
+    else:
+        print(f"  [警告] 未获取到任何资讯数据")
+    return pd.DataFrame(rows)
 
 
 def fetch_industry_boards():
@@ -249,7 +287,7 @@ def fetch_industry_boards():
         "fs": "m:90+t:2+f:!50",
         "fields": "f1,f2,f3,f4,f5,f6,f7,f8,f9,f10,f12,f13,f14,f15,f16,f17,f18,f20,f21,f23,f24,f25,f22,f33,f11,f62,f128,f136,f115,f152",
     }
-    j = _http_get_safe("82.push2.eastmoney.com", "/api/qt/clist/get", params)
+    j = _http_get_safe("push2.eastmoney.com", "/api/qt/clist/get", params)
     items = j.get("data", {}).get("diff", []) if j else []
     rows = []
     for item in items:

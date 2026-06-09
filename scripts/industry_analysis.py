@@ -85,7 +85,7 @@ def _find_industry_from_board(code, market_code):
         "fs": "m:90+t:2+f:!50",
         "fields": "f12,f14",
     }
-    j = _http_get_safe("82.push2.eastmoney.com", "/api/qt/clist/get", params)
+    j = _http_get_safe("push2.eastmoney.com", "/api/qt/clist/get", params)
     if not j or not j.get("data"):
         return ""
 
@@ -104,7 +104,7 @@ def _find_industry_from_board(code, market_code):
             "fs": f"b:{board_code}+f:!50",
             "fields": "f12",
         }
-        member_j = _http_get_safe("82.push2.eastmoney.com", "/api/qt/clist/get", member_params)
+        member_j = _http_get_safe("push2.eastmoney.com", "/api/qt/clist/get", member_params)
         if not member_j or not member_j.get("data"):
             continue
         members = member_j.get("data", {}).get("diff", [])
@@ -151,7 +151,7 @@ def fetch_industry_peers(code):
         "fs": f"b:{industry_code}+f:!50",
         "fields": "f2,f3,f9,f12,f14,f20,f21,f23,f37,f115,f128,f152",
     }
-    j = _http_get_safe("82.push2.eastmoney.com", "/api/qt/clist/get", params)
+    j = _http_get_safe("push2.eastmoney.com", "/api/qt/clist/get", params)
     if not j or not j.get("data"):
         return []
 
@@ -401,7 +401,7 @@ def analyze_industry_sentiment(industry_code):
         "fs": "m:90+t:2+f:!50",
         "fields": "f2,f3,f8,f12,f14,f62,f104,f105",
     }
-    j = _http_get_safe("82.push2.eastmoney.com", "/api/qt/clist/get", params)
+    j = _http_get_safe("push2.eastmoney.com", "/api/qt/clist/get", params)
     if not j or not j.get("data"):
         return result
 

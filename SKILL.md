@@ -30,7 +30,7 @@ description: Use when the user asks to analyze a stock, industry, or sector — 
 | 资金面 | 主力资金流向、北向资金 | 东方财富资金流向 API |
 | 基本面 | PE/PB/ROE/营收/净利润/资产负债率 | 东方财富实时行情 API |
 | 财务排雷 | 净现比、销售回款率、应收/存货预警 | 东方财富财务报表 API |
-| 新闻面 | 个股新闻、公告 | 东方财富新闻 API |
+| 资讯面 | 研报 + 公告 | 东方财富研报/公告 API |
 | 行业面 | 所属行业排名、板块资金流向 | 东方财富行业板块 API |
 | 反证清单 | 哪些事实会推翻当前结论 | 基于技术指标自动生成 |
 | 投资评级 | 1-5星综合评分 | 技术+资金+财务综合计算 |
@@ -301,11 +301,11 @@ stock-analyzer-skill/
 本 Skill 直连东方财富 API，绕过系统代理，自动重试：
 
 - **K 线数据**：`push2his.eastmoney.com`
-- **实时行情**：`push2.eastmoney.com` / `82.push2.eastmoney.com`
+- **实时行情**：`push2.eastmoney.com`
 - **资金流向**：`push2.eastmoney.com`
 - **北向资金**：`push2his.eastmoney.com`
-- **新闻数据**：`np-listapi.eastmoney.com`
-- **行业数据**：`82.push2.eastmoney.com`
+- **资讯数据**：`reportapi.eastmoney.com`（研报）+ `np-anotice-stock.eastmoney.com`（公告）
+- **行业数据**：`push2.eastmoney.com`
 - **财务报表**：`datacenter.eastmoney.com`
 
 ## Common Mistakes
