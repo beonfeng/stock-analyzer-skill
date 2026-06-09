@@ -11,8 +11,56 @@
 
 - [ ] 增加多股票批量对比（3-5 只股票横向 PK）
 - [ ] 增加自定义板块功能，支持用户自选股票组合分析
+- [ ] 历史估值数据获取（当前为经验阈值判断）
+
+## [1.2.0] - 2026-06-08
+
+### 新增
+
+- **北交所支持**：识别 8 开头的北交所代码（如 830799），正确处理价格除数
+- **美股修复**：修复美股价格除数错误（1000→1），AAPL 等价格不再被错误除以 1000
+- **情感分析加权**：关键词改为权重字典（涨停=3、利好=2 等），长词优先匹配，返回匹配关键词详情
+
+### 修复
+
+- **严重**：`generate_enhanced_comparison_report` 中 PE/PB/市值格式化前未做 `safe_num` 转换，API 返回异常值时崩溃
+- **严重**：`cmd_compare` 始终传空 `financial_data` 给 `calculate_financial_health`，财务报表数据从未使用
+- `cmd_sector` 中 `fund_flow` 为 None 时 `.get()` 崩溃
+- `us_stock.py` 中 `or` 模式导致 PE=0 等合法 falsy 值被错误 fallback
+- `us_stock.py` 与 `market_utils.py` 重复定义 `is_us_stock`
+- `valuation_analysis.py` 中 `fetch_historical_valuation` 是死代码（API 不返回历史估值）
+- `valuation_analysis.py` 浮点数 `==` 比较改为容差比较
+- `industry_analysis.py` PE≤0 股票排名返回 0 时添加说明标记
+- `technical_indicators.py` `np.polyfit` 全 NaN 崩溃防护
+- `technical_indicators.py` `rolling().mean()` 数据不足时 NaN 传播
+- `risk_control.py` 浮点数 `!=` 比较改为 `abs` 差值比较
+- `risk_control.py` 支撑/压力位去重时合并 source 信息（多指标共振）
+- `comparison.py` PE≤0 假设说明 + `safe_num` 转换
+- `monitor.py` 正则匹配中文数字修复（支持"二十"以上）
+- `monitor.py` 章节提取从 `---` 分隔线改为 `##` 标题
+- `utils.py` 裸 `except:` 改为 `except Exception:`
+- `utils.py` falsy 值不被缓存（改为 `result is not None`）
+- `utils.py` 冷却后 `_session_start_time` 未重置导致统计不准
+- `exporter.py` HTML title 未转义、`md_to_html` 空值检查
 
 ### 改进
+
+- **generate_report 重构**：794 行巨型函数拆分为 `ReportContext` 类 + 21 个 `_section_*` 子函数
+- `analyzer.py` 所有 `except: pass` 改为 `print(警告信息)`，不再静默吞掉异常
+- `SIGNAL_WEIGHTS` 添加详细注释说明每个权重的选择依据
+- 年化涨幅计算：优先用 250 日数据，不足时用复合增长率公式 `(1+r)^4-1`
+- `safe_num` 支持 `"N/A"`、`"--"`、`"nan"` 等常见异常值
+- User-Agent 版本更新至 Chrome 136/137、Firefox 139
+- 缓存淘汰从 O(n) 线性扫描改为 O(1) FIFO
+- K 线形态识别互斥形态改用 `elif`，提取 magic number 为模块常量
+- PDF 降级为 HTML 时打印警告信息
+- `sys.argv` 修改改为 `parse_args` 参数传递
+- 行业对比资金流向获取添加进度提示
+- 估值分位数阈值添加行业特性说明
+
+### 改进
+
+- **技术指标说明完善**：为 MACD、RSI、KDJ、布林带等指标添加详细的数值含义、区间说明和信号解释
 
 - **技术指标说明完善**：为 MACD、RSI、KDJ、布林带等指标添加详细的数值含义、区间说明和信号解释
   - MACD：添加 DIF/DEA/MACD柱的含义说明，红柱/绿柱的多空判断

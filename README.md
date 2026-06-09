@@ -117,9 +117,11 @@ cd stock-analyzer-skill
 pip install -r requirements.txt
 ```
 
-**仅 2 个外部依赖：** `pandas` + `numpy`，其余全部使用 Python 内置模块。
+**核心依赖：** `pandas` + `numpy`，其余全部使用 Python 内置模块。
 
 > 💡 为什么不用 `requests`？项目刻意使用 `http.client` 直连 HTTPS，绕过系统代理配置，在公司网络环境下更稳定。
+>
+> 🇺🇸 美股分析需额外安装 `pip install yfinance`（A 股/港股/北交所不需要）。
 
 ---
 
