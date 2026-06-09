@@ -57,14 +57,14 @@ def parse_counter_evidence(content: str) -> List[Dict[str, Any]]:
       - params: 附带参数（如均线值）
     """
     # 定位反证清单章节（标题可能带有后缀如"与跟踪因子"）
-    header_pattern = r"##\s*(?:十[一二三四五六七八九]|[一二三四五六七八九十]+)[、.]\s*反证清单.*"
+    header_pattern = r"##\s*[一二三四五六七八九十百]+\s*[、.]\s*反证清单.*"
     match = re.search(header_pattern, content)
     if not match:
         return []
 
-    # 提取到下一个 --- 分隔线之间的内容
+    # 提取到下一个 ## 标题为止（兼容无分隔线的报告）
     start = match.end()
-    next_section = re.search(r"\n---\n", content[start:])
+    next_section = re.search(r"\n##\s", content[start:])
     end = start + next_section.start() if next_section else len(content)
     section = content[start:end]
 

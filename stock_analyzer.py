@@ -21,6 +21,7 @@ from scripts.analyzer import (
     fetch_kline,
     calculate_indicators,
     fetch_fund_flow,
+    fetch_financial_report,
     calculate_financial_health,
     calculate_rating,
     get_stock_name,
@@ -87,7 +88,8 @@ def cmd_compare(args):
         df_a = fetch_kline(code_a, days=120)
         indicators_a = calculate_indicators(df_a)
         fund_flow_a = fetch_fund_flow(code_a)
-        financial_health_a = calculate_financial_health(quote_a, {})
+        financial_data_a = fetch_financial_report(code_a)
+        financial_health_a = calculate_financial_health(quote_a, financial_data_a)
         rating_a = calculate_rating(indicators_a, financial_health_a, fund_flow_a)
 
         # 获取股票 B 数据
@@ -96,7 +98,8 @@ def cmd_compare(args):
         df_b = fetch_kline(code_b, days=120)
         indicators_b = calculate_indicators(df_b)
         fund_flow_b = fetch_fund_flow(code_b)
-        financial_health_b = calculate_financial_health(quote_b, {})
+        financial_data_b = fetch_financial_report(code_b)
+        financial_health_b = calculate_financial_health(quote_b, financial_data_b)
         rating_b = calculate_rating(indicators_b, financial_health_b, fund_flow_b)
 
         # 构建对比数据
@@ -183,10 +186,10 @@ def generate_enhanced_comparison_report(stock_a, stock_b, result):
         name = stock["name"]
         code = stock["code"]
         price = stock["price"]
-        pe = stock["pe"]
-        pb = stock["pb"]
-        mv = stock["market_cap"]
-        chg = stock["change_pct"]
+        pe = safe_num(stock["pe"])
+        pb = safe_num(stock["pb"])
+        mv = safe_num(stock["market_cap"])
+        chg = safe_num(stock["change_pct"])
         indicators = stock["indicators"]
         fund_flow = stock.get("fund_flow", {})
 
@@ -201,7 +204,7 @@ def generate_enhanced_comparison_report(stock_a, stock_b, result):
         L.append(f"| RSI6 | {indicators.get('RSI6', 50):.2f} |")
 
         # 资金流向
-        main_flow = safe_num(fund_flow.get("今日", {}).get("f62", 0))
+        main_flow = safe_num((fund_flow or {}).get("今日", {}).get("f62", 0))
         L.append(f"| 主力资金 | {'+' if main_flow > 0 else ''}{main_flow/1e8:.2f} 亿 |")
 
     # 投资建议
@@ -252,7 +255,7 @@ def cmd_sector(args):
                 indicators = calculate_indicators(df)
                 fund_flow = fetch_fund_flow(code)
 
-                main_flow = safe_num(fund_flow.get("今日", {}).get("f62", 0))
+                main_flow = safe_num((fund_flow or {}).get("今日", {}).get("f62", 0))
 
                 stocks_data.append({
                     "code": code,
@@ -432,7 +435,9 @@ def main():
         need_analyze = True
 
     if need_analyze:
-        sys.argv = [sys.argv[0], "analyze"] + args_list
+        parse_target = ["analyze"] + args_list
+    else:
+        parse_target = None
 
     parser = argparse.ArgumentParser(
         prog="stock_analyzer",
@@ -577,7 +582,7 @@ def main():
         help="只检查最近 N 天的报告"
     )
 
-    args = parser.parse_args()
+    args = parser.parse_args(parse_target)
 
     # 执行对应命令
     if args.command == "analyze":

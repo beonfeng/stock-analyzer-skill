@@ -20,7 +20,7 @@
 from .utils import _http_get_safe, safe_num as _safe_float
 from .market_utils import get_market_info, get_secid
 
-# API 常量
+# API 常量 — 板块接口专用 token（与个股接口 token 不同）
 UT_TOKEN = "bd1d9ddb04089700cf9c27f6f7426281"
 
 
@@ -91,6 +91,7 @@ def _find_industry_from_board(code, market_code):
 
     boards = j.get("data", {}).get("diff", [])
     # 遍历行业板块，查找股票所属行业（限制最多遍历 30 个板块，避免过多请求）
+    # 性能影响：每个板块需一次 API 请求获取成员列表，最多 30 次串行请求
     for board in boards[:30]:
         board_code = board.get("f12", "")
         if not board_code:
@@ -197,13 +198,13 @@ def analyze_valuation_comparison(code, peers):
         True
     """
     if not peers:
-        return {'PE排名': 0, 'PB排名': 0, 'ROE排名': 0, '估值排名': []}
+        return {'PE排名': 0, 'PB排名': 0, 'ROE排名': 0, '估值排名': [], '排名说明': '无同行数据'}
 
     # 过滤有效数据（PE > 0 的股票）
     valid_peers = [p for p in peers if p.get('PE', 0) > 0]
 
     if not valid_peers:
-        return {'PE排名': 0, 'PB排名': 0, 'ROE排名': 0, '估值排名': []}
+        return {'PE排名': 0, 'PB排名': 0, 'ROE排名': 0, '估值排名': [], '排名说明': '不适用（亏损或数据缺失）'}
 
     # 按 PE 排名（从低到高）
     pe_sorted = sorted(valid_peers, key=lambda x: x.get('PE', float('inf')))
@@ -242,12 +243,18 @@ def analyze_valuation_comparison(code, peers):
             '总市值': p['总市值'],
         })
 
-    return {
+    result = {
         'PE排名': pe_rank,
         'PB排名': pb_rank,
         'ROE排名': roe_rank,
         '估值排名': valuation_rank,
     }
+
+    # 排名为 0 表示该股票不在有效对比范围内（亏损或数据缺失）
+    if pe_rank == 0 and pb_rank == 0 and roe_rank == 0:
+        result['排名说明'] = '不适用（亏损或数据缺失）'
+
+    return result
 
 
 def analyze_fund_flow_comparison(code, peers):
@@ -278,10 +285,12 @@ def analyze_fund_flow_comparison(code, peers):
     top_peers = sorted(peers, key=lambda x: x.get('总市值', 0), reverse=True)[:15]
 
     # 获取行业内各股票的资金流向
+    # 性能瓶颈：逐股调用 API，每只股票一次 HTTP 请求，15 只约需 30-60 秒
     flow_data = []
-    for peer in top_peers:
+    for i, peer in enumerate(top_peers):
         peer_code = peer['代码']
         peer_name = peer['名称']
+        print(f"  获取资金流向 {i+1}/{len(top_peers)}...")
 
         # 获取个股资金流向
         params = {

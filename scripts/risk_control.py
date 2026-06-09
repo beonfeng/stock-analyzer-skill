@@ -196,9 +196,9 @@ def calc_support_resistance(
         high_60 = recent_60["最高"].max()
         low_60 = recent_60["最低"].min()
 
-        if high_60 > current_price and high_60 != high_20:
+        if high_60 > current_price and abs(high_60 - high_20) > 0.01:
             resistance.append({"price": round(high_60, 2), "source": "60日最高"})
-        if low_60 < current_price and low_60 != low_20:
+        if low_60 < current_price and abs(low_60 - low_20) > 0.01:
             support.append({"price": round(low_60, 2), "source": "60日最低"})
 
     # 4. 斐波那契回撤（基于近期高低点）
@@ -214,18 +214,21 @@ def calc_support_resistance(
             elif fib_price < current_price:
                 support.append({"price": round(fib_price, 2), "source": f"斐波那契{name}"})
 
-    # 去重并排序
-    resistance = sorted(
-        [{"price": r["price"], "source": r["source"]} for r in
-         {item["price"]: item for item in resistance}.values()],
-        key=lambda x: x["price"]
-    )
-    support = sorted(
-        [{"price": s["price"], "source": s["source"]} for s in
-         {item["price"]: item for item in support}.values()],
-        key=lambda x: x["price"],
-        reverse=True
-    )
+    # 去重并排序（价格相同时合并 source 信息）
+    def _dedup(items, reverse=False):
+        merged = {}
+        for item in items:
+            p = item["price"]
+            if p in merged:
+                existing_sources = set(merged[p]["source"].split(" / "))
+                existing_sources.add(item["source"])
+                merged[p]["source"] = " / ".join(sorted(existing_sources))
+            else:
+                merged[p] = {"price": p, "source": item["source"]}
+        return sorted(merged.values(), key=lambda x: x["price"], reverse=reverse)
+
+    resistance = _dedup(resistance, reverse=False)
+    support = _dedup(support, reverse=True)
 
     return {
         "resistance": resistance[:5],  # 最多 5 个压力位
@@ -319,6 +322,8 @@ def check_risk_rules(
     ma10 = indicators.get("MA10", 0)
 
     # 1. 乖离率检查（价格偏离 MA20 > 5%）
+    if price <= 0:
+        print("  [提示] 价格数据异常，跳过乖离率检查")
     if ma20 > 0 and price > 0:
         bias = (price - ma20) / ma20 * 100
         if bias > 5:

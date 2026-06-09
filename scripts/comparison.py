@@ -7,6 +7,11 @@
 
 from typing import Dict, Any, List, Optional
 
+try:
+    from .utils import safe_num
+except ImportError:
+    from utils import safe_num
+
 
 def compare_two_stocks(
     stock_a: Dict[str, Any],
@@ -31,15 +36,15 @@ def compare_two_stocks(
     score_b = 0
 
     # 1. 估值对比（PE 越低越好）
-    pe_a = stock_a.get("pe", 0)
-    pe_b = stock_b.get("pe", 0)
+    pe_a = safe_num(stock_a.get("pe", 0))
+    pe_b = safe_num(stock_b.get("pe", 0))
     pe_winner = "a" if pe_a < pe_b and pe_a > 0 else "b" if pe_b < pe_a and pe_b > 0 else "tie"
     comparison.append({
         "dimension": "市盈率(PE)",
         "stock_a": f"{pe_a:.1f}",
         "stock_b": f"{pe_b:.1f}",
         "winner": pe_winner,
-        "note": "越低越便宜",
+        "note": "越低越便宜（注：PE<=0 的股票不参与 PE 维度比较，视为亏损/数据缺失）",
     })
     if pe_winner == "a":
         score_a += 1
@@ -47,8 +52,8 @@ def compare_two_stocks(
         score_b += 1
 
     # 2. PB 对比
-    pb_a = stock_a.get("pb", 0)
-    pb_b = stock_b.get("pb", 0)
+    pb_a = safe_num(stock_a.get("pb", 0))
+    pb_b = safe_num(stock_b.get("pb", 0))
     pb_winner = "a" if pb_a < pb_b and pb_a > 0 else "b" if pb_b < pb_a and pb_b > 0 else "tie"
     comparison.append({
         "dimension": "市净率(PB)",
@@ -202,6 +207,7 @@ def generate_comparison_table(
 
 
 # 板块代表性股票映射
+# 最后更新: 2026-06，龙头股可能变化，需定期维护
 SECTOR_STOCKS = {
     "白酒": ["600519", "000858", "000568", "002304", "603369"],
     "新能源": ["300750", "002594", "601012", "600438", "002129"],

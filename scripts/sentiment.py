@@ -8,19 +8,28 @@
 from typing import List, Dict, Any
 
 
-# 正面关键词
-POSITIVE_KEYWORDS = [
-    "上涨", "增长", "盈利", "超预期", "利好", "回购", "升级", "突破",
-    "新高", "涨停", "强势", "领涨", "加仓", "增持", "看好", "乐观",
-    "回暖", "反弹", "放量", "主力流入", "机构买入", "业绩预增",
-]
+# 正面关键词权重（权重越高，影响越大）
+POSITIVE_WEIGHTS = {
+    "涨停": 3, "利好": 2, "大涨": 2, "放量": 1, "突破": 1.5,
+    "回暖": 1, "增长": 1, "上涨": 1, "强势": 1.5, "新高": 2,
+    "盈利": 1.5, "超预期": 2, "回购": 1.5, "升级": 1.5, "领涨": 1.5,
+    "加仓": 1, "增持": 1.5, "看好": 1, "乐观": 1, "反弹": 1,
+    "主力流入": 2, "机构买入": 2, "业绩预增": 2,
+}
 
-# 负面关键词
-NEGATIVE_KEYWORDS = [
-    "下跌", "亏损", "下滑", "不及预期", "利空", "减持", "降级", "风险",
-    "跌停", "暴跌", "弱势", "领跌", "减仓", "清仓", "看空", "悲观",
-    "破位", "放量下跌", "主力流出", "机构卖出", "业绩预减", "退市",
-]
+# 负面关键词权重
+NEGATIVE_WEIGHTS = {
+    "跌停": 3, "利空": 2, "大跌": 2, "下跌": 1, "暴跌": 2,
+    "破位": 1.5, "下行": 1, "弱势": 1.5, "新低": 2, "暴雷": 3,
+    "亏损": 2, "下滑": 1.5, "不及预期": 2, "减持": 1.5, "降级": 1.5,
+    "风险": 1, "领跌": 1.5, "减仓": 1, "清仓": 1.5, "看空": 1,
+    "悲观": 1, "放量下跌": 2, "主力流出": 2, "机构卖出": 2,
+    "业绩预减": 2, "退市": 3,
+}
+
+# 按长度降序排列（长词优先匹配，避免子串误匹配）
+POSITIVE_KEYWORDS = sorted(POSITIVE_WEIGHTS.keys(), key=len, reverse=True)
+NEGATIVE_KEYWORDS = sorted(NEGATIVE_WEIGHTS.keys(), key=len, reverse=True)
 
 
 def analyze_sentiment(news_list: List[Dict[str, Any]]) -> Dict[str, Any]:
@@ -51,23 +60,40 @@ def analyze_sentiment(news_list: List[Dict[str, Any]]) -> Dict[str, Any]:
     pos_count = 0
     neg_count = 0
     key_news = []
+    all_matched_pos = set()
+    all_matched_neg = set()
 
     for news in news_list:
         title = news.get("新闻标题", "")
         content = news.get("新闻内容", "")
         text = f"{title} {content}"
 
-        pos_score = sum(1 for kw in POSITIVE_KEYWORDS if kw in text)
-        neg_score = sum(1 for kw in NEGATIVE_KEYWORDS if kw in text)
+        # 加权计数 + 已匹配关键词集合避免重复计数
+        pos_score = 0
+        neg_score = 0
+        matched_pos = set()
+        matched_neg = set()
+
+        for kw in POSITIVE_KEYWORDS:
+            if kw in text:
+                pos_score += POSITIVE_WEIGHTS[kw]
+                matched_pos.add(kw)
+        for kw in NEGATIVE_KEYWORDS:
+            if kw in text:
+                neg_score += NEGATIVE_WEIGHTS[kw]
+                matched_neg.add(kw)
+
+        all_matched_pos.update(matched_pos)
+        all_matched_neg.update(matched_neg)
 
         if pos_score > neg_score:
             pos_count += 1
             if pos_score >= 2:
-                key_news.append({"title": title, "sentiment": "positive"})
+                key_news.append({"title": title, "sentiment": "positive", "keywords": list(matched_pos)})
         elif neg_score > pos_score:
             neg_count += 1
             if neg_score >= 2:
-                key_news.append({"title": title, "sentiment": "negative"})
+                key_news.append({"title": title, "sentiment": "negative", "keywords": list(matched_neg)})
 
     # 判断整体情感
     total = pos_count + neg_count
@@ -90,6 +116,10 @@ def analyze_sentiment(news_list: List[Dict[str, Any]]) -> Dict[str, Any]:
         "negative_count": neg_count,
         "summary": summary,
         "key_news": key_news[:5],
+        "matched_keywords": {
+            "positive": sorted(all_matched_pos),
+            "negative": sorted(all_matched_neg),
+        },
     }
 
 

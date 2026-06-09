@@ -19,18 +19,7 @@ except ImportError:
 import pandas as pd
 import numpy as np
 
-
-def is_us_stock(code: str) -> bool:
-    """
-    检测是否为美股 ticker。
-
-    规则：包含字母的非纯数字代码视为美股（如 AAPL、TSLA、NVDA、BRK.B）。
-    纯数字代码走 A 股/港股逻辑。
-    """
-    if not code:
-        return False
-    # 包含字母 → 美股 ticker
-    return bool(re.search(r"[A-Za-z]", code))
+from scripts.market_utils import is_us_stock
 
 
 def check_yfinance():
@@ -116,21 +105,21 @@ def fetch_us_realtime_quote(ticker: str) -> dict:
         except Exception:
             raise ValueError(f"无法获取 {ticker} 的实时行情")
     else:
-        price = info.get("regularMarketPrice") or info.get("currentPrice", 0)
+        price = info.get("regularMarketPrice") if info.get("regularMarketPrice") is not None else info.get("currentPrice", 0)
         market_cap = info.get("marketCap", 0)
 
     # 映射为东方财富字段格式
-    pe = info.get("trailingPE") or info.get("forwardPE", 0)
+    pe = info.get("trailingPE") if info.get("trailingPE") is not None else info.get("forwardPE", 0)
     pb = info.get("priceToBook", 0)
     roe = info.get("returnOnEquity", 0)
-    if roe:
+    if roe is not None and roe != 0:
         roe = roe * 100  # 小数转百分比
     gross_margin = info.get("grossMargins", 0)
-    if gross_margin:
+    if gross_margin is not None and gross_margin != 0:
         gross_margin = gross_margin * 100
     revenue = info.get("totalRevenue", 0)
     profit_growth = info.get("earningsGrowth", 0)
-    if profit_growth:
+    if profit_growth is not None and profit_growth != 0:
         profit_growth = profit_growth * 100
     debt_ratio = info.get("debtToEquity", 0)
 

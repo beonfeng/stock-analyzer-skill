@@ -298,19 +298,19 @@ class TestEstimateZoneFromValue:
 
     def test_pe_low(self):
         """PE < 15 → 低估"""
-        assert _estimate_zone_from_value("PE", 10) == "低估（经验判断）"
+        assert _estimate_zone_from_value("PE", 10) == "低估（全市场经验判断，需结合行业特性）"
 
     def test_pe_reasonable(self):
         """15 <= PE < 25 → 合理"""
-        assert _estimate_zone_from_value("PE", 20) == "合理（经验判断）"
+        assert _estimate_zone_from_value("PE", 20) == "合理（全市场经验判断，需结合行业特性）"
 
     def test_pe_reasonable_high(self):
         """25 <= PE < 40 → 合理偏高"""
-        assert _estimate_zone_from_value("PE", 30) == "合理偏高（经验判断）"
+        assert _estimate_zone_from_value("PE", 30) == "合理偏高（全市场经验判断，需结合行业特性）"
 
     def test_pe_overvalued(self):
         """PE >= 40 → 高估"""
-        assert _estimate_zone_from_value("PE", 50) == "高估（经验判断）"
+        assert _estimate_zone_from_value("PE", 50) == "高估（全市场经验判断，需结合行业特性）"
 
     # === PB 经验判断 ===
 

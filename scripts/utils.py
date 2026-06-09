@@ -41,12 +41,12 @@ _ssl_ctx = ssl.create_default_context()
 
 # 请求头池（随机轮换，降低被识别为爬虫的概率）
 _USER_AGENTS = [
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 Edg/120.0.0.0",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2 Safari/605.1.15",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:139.0) Gecko/20100101 Firefox/139.0",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36 Edg/137.0.0.0",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.4 Safari/605.1.15",
 ]
 
 # 请求缓存（避免重复请求相同数据）
@@ -107,7 +107,7 @@ def _get_random_headers():
         ]),
         "Connection": "keep-alive",
         "Cache-Control": "no-cache",
-        "Sec-Ch-Ua": '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"',
+        "Sec-Ch-Ua": '"Not_A Brand";v="8", "Chromium";v="137", "Google Chrome";v="137"',
         "Sec-Ch-Ua-Mobile": "?0",
         "Sec-Ch-Ua-Platform": '"Windows"',
         "Sec-Fetch-Dest": "empty",
@@ -144,6 +144,7 @@ def _rate_limit():
         _request_count = 0
         _request_window_start = time.time()
         _last_cooldown_time = time.time()
+        _session_start_time = time.time()
         print("  [冷却] 冷却完成，恢复请求")
 
     # ── 层 1：非交易日降频 ──
@@ -203,8 +204,8 @@ def _set_cache(cache_key, data):
     """设置缓存"""
     # 限制缓存大小
     if len(_request_cache) > 1000:
-        # 删除最旧的缓存
-        oldest_key = min(_request_cache.keys(), key=lambda k: _request_cache[k][1])
+        # 删除最早的缓存条目（近似 FIFO，O(1) 替代 O(n) 扫描）
+        oldest_key = next(iter(_request_cache))
         del _request_cache[oldest_key]
     _request_cache[cache_key] = (data, time.time())
 
@@ -261,6 +262,8 @@ def safe_num(v, default=0):
         float
     """
     if v is None or v == "-" or v == "":
+        return default
+    if isinstance(v, str) and v.strip() in ("N/A", "--", "nan", "NaN", "NA", "null"):
         return default
     try:
         return float(v)
@@ -333,7 +336,7 @@ def _http_get(host, path, params=None, timeout=15, retries=2, use_cache=True):
                     if HAS_BROTLI:
                         try:
                             data = brotli.decompress(data)
-                        except:
+                        except Exception:
                             pass
             except Exception:
                 pass
@@ -351,7 +354,7 @@ def _http_get(host, path, params=None, timeout=15, retries=2, use_cache=True):
                 result = json.loads(text)
 
             # 缓存结果
-            if use_cache and result:
+            if use_cache and result is not None:
                 _set_cache(cache_key, result)
 
             # 成功 → 清除该 Host 的错误计数
@@ -364,7 +367,7 @@ def _http_get(host, path, params=None, timeout=15, retries=2, use_cache=True):
             if conn:
                 try:
                     conn.close()
-                except:
+                except Exception:
                     pass
 
             # 连接拒绝类错误 → 标记 Host 错误，不重试
@@ -386,7 +389,7 @@ def _http_get(host, path, params=None, timeout=15, retries=2, use_cache=True):
     raise last_err
 
 
-def _http_get_safe(host, path, params=None, timeout=15, retries=2, default=None, use_cache=True):
+def _http_get_safe(host, path, params=None, timeout=15, retries=2, default={}, use_cache=True):
     """安全版 _http_get，失败返回默认值而非抛异常"""
     try:
         return _http_get(host, path, params, timeout, retries, use_cache)
@@ -394,7 +397,7 @@ def _http_get_safe(host, path, params=None, timeout=15, retries=2, default=None,
         # 连接拒绝类错误 → 不打印堆栈，仅输出简洁提示
         if _is_connection_error(e):
             print(f"  [跳过] {host} 暂时不可用，返回默认值")
-        return default if default is not None else {}
+        return default
 
 
 def clear_cache():
@@ -479,7 +482,13 @@ def print_request_stats():
 
 
 def reset_request_stats():
-    """重置会话请求统计（用于新一轮分析开始时）"""
+    """
+    重置会话请求统计计数器（用于新一轮分析开始时）。
+
+    注意：仅重置统计计数器（请求数、缓存命中数、会话起始时间），
+    不影响速率限制状态（如 _last_request_time、_request_count、
+    _host_cooldown_until 等），也不会清空请求缓存。
+    """
     global _session_request_count, _session_cache_hits, _session_start_time
     _session_request_count = 0
     _session_cache_hits = 0

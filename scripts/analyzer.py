@@ -6,6 +6,7 @@
 
 import datetime
 import time
+from collections import defaultdict
 from pathlib import Path
 from typing import Dict, Any
 
@@ -27,6 +28,13 @@ from .comparison import compare_two_stocks, generate_comparison_table, get_secto
 
 
 # ============================================================
+# 模块级状态
+# ============================================================
+
+_last_analysis_time = 0  # 上次分析完成时间戳，用于连续调用冷却保护
+
+
+# ============================================================
 # 东方财富 API 封装
 # ============================================================
 
@@ -43,7 +51,8 @@ def fetch_kline(code, days=500):
         "secid": get_secid(code, market_id),
         "beg": start, "end": end,
     }
-    # 港股接口不稳定，增加重试次数和超时时间
+    # 港股 API 不稳定，需要更多重试（最坏情况：12次重试 × 4秒间隔 ≈ 48秒）
+    # 港股 kline 接口经常返回空数据或超时，多次重试可显著提高成功率
     if market_code == 'HK':
         j = _http_get("push2his.eastmoney.com", "/api/qt/stock/kline/get", params, timeout=20, retries=12)
     else:
@@ -75,23 +84,7 @@ def fetch_realtime_quote(code):
     """获取实时行情 + 财务指标"""
     market_code, market_id, _ = get_market_info(code)
 
-    # 方法1：从列表中查找（仅支持 A 股）
-    if market_code in ('SH', 'SZ'):
-        params = {
-            "pn": "1", "pz": "5000", "po": "1", "np": "1",
-            "ut": "bd1d9ddb04089700cf9c27f6f7426281",
-            "fltt": "2", "invt": "2", "fid": "f12",
-            "fs": "m:0+t:6,m:0+t:80,m:1+t:2,m:1+t:23,m:0+t:81+s:2048",
-            "fields": "f1,f2,f3,f4,f5,f6,f7,f8,f9,f10,f12,f13,f14,f15,f16,f17,f18,f20,f21,f23,f24,f25,f22,f11,f62,f128,f136,f115,f152",
-        }
-        j = _http_get_safe("82.push2.eastmoney.com", "/api/qt/clist/get", params)
-        items = j.get("data", {}).get("diff", []) if j else []
-        for item in items:
-            if str(item.get("f12", "")) == code:
-                item["market"] = market_code
-                return item
-
-    # 方法2：直接查询单只股票
+    # 方法1（优先）：直接查询单只股票 — O(1) 请求，适用于所有市场
     params2 = {
         "secid": get_secid(code, market_id),
         "ut": "fa5fd1943c7b386f172d6893dbfba10b",
@@ -110,21 +103,30 @@ def fetch_realtime_quote(code):
             """获取直接可用的字段"""
             return safe_num(data.get(field, 0))
 
-        # PE：美股 f162 可能为 '-'，用 f92 作为备选
+        # PE：f162 API 返回基点值（如 1534 = 15.34），需除以 100
+        # 美股 f162 可能为 '-'，用 f92 作为备选
         pe_raw = data.get("f162", "-")
         if pe_raw == "-" or pe_raw is None:
             pe = direct("f92")  # f92 直接是 PE 值
         else:
             pe = direct("f162") / 100
+            if abs(pe) < 0.01 and pe != 0:
+                print(f"  [警告] PE 值异常小 ({pe})，f162 原始值={pe_raw}，可能不需要除以100")
 
-        # PB：美股 f167 可能需要不同处理
+        # PB：f167 API 返回基点值，需除以 100
         pb_raw = data.get("f167", "-")
-        pb = direct("f167") / 100 if pb_raw != "-" and pb_raw is not None else 0
+        if pb_raw != "-" and pb_raw is not None:
+            pb = direct("f167") / 100
+            if abs(pb) < 0.01 and pb != 0:
+                print(f"  [警告] PB 值异常小 ({pb})，f167 原始值={pb_raw}，可能不需要除以100")
+        else:
+            pb = 0
 
         return {
             "f14": data.get("f58", ""),  # 名称
             "f2": convert_field("f43"),  # 最新价
             "f3": direct("f170") / 100,   # 涨跌幅（API 返回基点值，如 314 = 3.14%，需除以 100）
+            # 注意：f170 除以 100 后若绝对值 < 0.01%，属于正常微幅波动，无需警告
             "f9": pe,   # PE
             "f23": pb,  # PB
             "f20": direct("f116"),  # 总市值（元）
@@ -136,6 +138,23 @@ def fetch_realtime_quote(code):
             "f34": direct("f188"),  # 资产负债率（已经是百分比）
             "market": market_code,  # 市场类型
         }
+    # 方法2（备选）：从列表中遍历查找 — O(n) 性能较差，仅 A 股可用
+    # 注意：此方法会请求约 5000 只股票的列表再逐个匹配，单股分析建议优先使用方法1
+    if market_code in ('SH', 'SZ'):
+        params = {
+            "pn": "1", "pz": "5000", "po": "1", "np": "1",
+            "ut": "bd1d9ddb04089700cf9c27f6f7426281",
+            "fltt": "2", "invt": "2", "fid": "f12",
+            "fs": "m:0+t:6,m:0+t:80,m:1+t:2,m:1+t:23,m:0+t:81+s:2048",
+            "fields": "f1,f2,f3,f4,f5,f6,f7,f8,f9,f10,f12,f13,f14,f15,f16,f17,f18,f20,f21,f23,f24,f25,f22,f11,f62,f128,f136,f115,f152",
+        }
+        j = _http_get_safe("82.push2.eastmoney.com", "/api/qt/clist/get", params)
+        items = j.get("data", {}).get("diff", []) if j else []
+        for item in items:
+            if str(item.get("f12", "")) == code:
+                item["market"] = market_code
+                return item
+
     return {"market": market_code}
 
 
@@ -193,8 +212,8 @@ def fetch_north_flow():
                 if len(parts) >= 6:
                     rows.append({"日期": parts[0], "收盘": parts[2], "涨跌幅": parts[8]})
             result[symbol] = pd.DataFrame(rows)
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"  [警告] 北向资金({symbol})获取失败: {e}")
     return result
 
 
@@ -216,7 +235,8 @@ def fetch_stock_news(code):
                 "文章来源": item.get("source", ""),
             })
         return pd.DataFrame(rows)
-    except Exception:
+    except Exception as e:
+        print(f"  [警告] 新闻数据获取失败: {e}")
         return pd.DataFrame()
 
 
@@ -262,7 +282,8 @@ def fetch_financial_report(code):
         if j and isinstance(j, dict) and j.get("result"):
             return j["result"].get("data", [])
         return []
-    except Exception:
+    except Exception as e:
+        print(f"  [警告] 财务报表获取失败: {e}")
         return []
 
 
@@ -329,8 +350,8 @@ def fetch_company_profile(code):
             }
             result['公司简介'] = jbzl.get('gsjj', '').strip()
             result['经营范围'] = jbzl.get('jyfw', '').strip()
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"  [警告] 公司基本资料获取失败: {e}")
 
     # 2. 获取主营业务构成
     try:
@@ -347,12 +368,12 @@ def fetch_company_profile(code):
             items = j2['result'].get('data', [])
             if items:
                 # 按报告日期分组，取最新一期
-                from collections import defaultdict
                 by_date = defaultdict(list)
                 for item in items:
                     date = item.get('REPORT_DATE', '')[:10]
                     by_date[date].append(item)
 
+                # API 返回 ISO 格式日期（如 "2024-03-31T00:00:00"），字符串比较等价于日期比较
                 latest_date = max(by_date.keys())
                 latest_items = by_date[latest_date]
                 total_income = sum(it.get('MAIN_BUSINESS_INCOME', 0) for it in latest_items)
@@ -369,8 +390,8 @@ def fetch_company_profile(code):
                         '毛利率': gross,
                         '报告期': latest_date,
                     })
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"  [警告] 主营业务构成获取失败: {e}")
 
     # 3. 获取十大流通股东
     try:
@@ -386,11 +407,11 @@ def fetch_company_profile(code):
         if j3 and isinstance(j3, dict) and j3.get('result'):
             items3 = j3['result'].get('data', [])
             if items3:
-                from collections import defaultdict as _dd
-                by_date3 = _dd(list)
+                by_date3 = defaultdict(list)
                 for it in items3:
                     date = it.get('END_DATE', '')[:10]
                     by_date3[date].append(it)
+                # API 返回 ISO 格式日期，字符串比较等价于日期比较
                 latest3 = max(by_date3.keys())
                 for it in sorted(by_date3[latest3], key=lambda x: x.get('HOLD_NUM', 0), reverse=True)[:10]:
                     result['股东结构'].append({
@@ -400,13 +421,14 @@ def fetch_company_profile(code):
                         '股东性质': it.get('HOLDER_TYPE', ''),
                         '报告期': latest3,
                     })
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"  [警告] 十大流通股东获取失败: {e}")
 
     return result
 
 
 # 常见股票名称映射（网络不稳定时的备用方案）
+# 最后更新: 2026-06，新上市股票需手动添加
 _STOCK_NAMES = {
     "000001": "平安银行", "000002": "万科A", "000063": "中兴通讯",
     "000100": "TCL科技", "000157": "中联重科", "000333": "美的集团",
@@ -551,7 +573,14 @@ def get_stock_name(code, return_quote=False):
 # ============================================================
 
 def calculate_indicators(df):
-    """计算技术指标（纯 pandas 实现）"""
+    """计算技术指标（纯 pandas 实现）
+
+    注意：本函数计算基础指标用于快速访问（MA/MACD/KDJ/RSI/BOLL/ATR 等），
+    完整指标在 technical_indicators.py 的 calculate_extended_indicators 中扩展
+    （RSI 背离、MACD 柱状图分析、成交量异动、K 线形态、筹码分布等）。
+    两处计算逻辑有意保持独立：本函数提供基础值供报告直接引用，
+    extended_indicators 在此基础上做更深层次的分析。
+    """
     if df.empty or len(df) < 30:
         return {}
 
@@ -766,238 +795,259 @@ def fmt_pct(n):
     return f"{n:.2f}%"
 
 
-
 # ============================================================
 # 单文件综合报告生成
 # ============================================================
 
-def generate_report(code, name, df, indicators, fund_flow, north_flow, quote, news_df, industry_df,
-                    financial_health=None, rating=None, extended_indicators=None,
-                    valuation_percentile=None, industry_comparison=None,
-                    weighted_score=None, stop_loss=None, target=None,
-                    support_resistance=None, position=None, risk_check=None,
-                    sentiment_result=None, company_profile=None):
-    """生成单个综合分析报告"""
+class ReportContext:
+    """报告生成上下文，打包所有参数"""
+    __slots__ = ['code', 'name', 'df', 'indicators', 'fund_flow', 'north_flow',
+                 'quote', 'news_df', 'industry_df', 'financial_health', 'rating',
+                 'extended_indicators', 'valuation_percentile', 'industry_comparison',
+                 'weighted_score', 'stop_loss', 'target', 'support_resistance',
+                 'position', 'risk_check', 'sentiment_result', 'company_profile',
+                 'price', 'now']
+    def __init__(self, **kwargs):
+        for k, v in kwargs.items():
+            setattr(self, k, v)
+
+
+def _section_title(ctx):
+    """标题"""
     L = []
-    now = datetime.datetime.now().strftime('%Y-%m-%d %H:%M')
-    price = indicators.get("最新价", 0)
+    L.append(f"# {ctx.name}（{ctx.code}）股票分析报告")
+    L.append(f"\n> 生成时间：{ctx.now}")
+    L.append(f"> 数据区间：{ctx.df['日期'].iloc[0]} ~ {ctx.df['日期'].iloc[-1]}，共 {len(ctx.df)} 个交易日\n")
+    return L
 
-    # ── 标题 ──
-    L.append(f"# {name}（{code}）股票分析报告")
-    L.append(f"\n> 生成时间：{now}")
-    L.append(f"> 数据区间：{df['日期'].iloc[0]} ~ {df['日期'].iloc[-1]}，共 {len(df)} 个交易日\n")
 
-    # ── 公司概况 ──
-    if company_profile:
-        L.append("---\n## 公司概况\n")
+def _section_company_profile(ctx):
+    """公司概况"""
+    L = []
+    if not ctx.company_profile:
+        return L
 
-        # 基本信息
-        info = company_profile.get('基本信息', {})
-        if info:
-            L.append("### 基本信息\n")
-            L.append("| 项目 | 内容 |")
-            L.append("|------|------|")
-            for label, key in [
-                ("公司名称", "公司名称"),
-                ("英文名称", "英文名称"),
-                ("所属行业", "所属行业"),
-                ("证监会行业", "证监会行业"),
-                ("法人代表", "法人代表"),
-                ("董事长", "董事长"),
-                ("总经理", "总经理"),
-                ("注册资本", "注册资本"),
-                ("员工人数", "员工人数"),
-                ("上市日期", "上市日期"),
-                ("成立日期", "成立日期"),
-            ]:
-                val = info.get(key, '')
-                if val:
-                    L.append(f"| {label} | {val} |")
-            L.append("")
+    L.append("---\n## 公司概况\n")
 
-        # 公司简介
-        desc = company_profile.get('公司简介', '')
-        if desc:
-            L.append("### 公司简介\n")
-            L.append(f"{desc}\n")
-
-        # 主营业务构成
-        biz = company_profile.get('主营业务', [])
-        if biz:
-            L.append("### 主营业务构成\n")
-            L.append("| 业务 | 收入(亿) | 占比 | 毛利率 |")
-            L.append("|------|----------|------|--------|")
-            for item in biz:
-                name_str = item.get('名称', '')
-                income = item.get('收入', 0)
-                ratio = item.get('占比', 0)
-                gross = item.get('毛利率', 0)
-                L.append(f"| {name_str} | {income:.2f} | {ratio:.2f}% | {gross:.2f}% |")
-            L.append("")
-
-        # 股权结构
-        holders = company_profile.get('股东结构', [])
-        if holders:
-            L.append("### 股权结构（前十大流通股东）\n")
-            L.append("| 股东 | 持股(亿股) | 占流通股 | 性质 |")
-            L.append("|------|-----------|----------|------|")
-            for h in holders[:10]:
-                h_name = h.get('名称', '')
-                h_shares = h.get('持股数', 0) / 1e8
-                h_ratio = h.get('占流通股比', 0)
-                h_type = h.get('股东性质', '')
-                L.append(f"| {h_name} | {h_shares:.2f} | {h_ratio:.2f}% | {h_type} |")
-            L.append("")
-
-            # 股权集中度分析
-            top1_ratio = holders[0].get('占流通股比', 0) if holders else 0
-            top3_ratio = sum(h.get('占流通股比', 0) for h in holders[:3])
-            if top1_ratio > 30:
-                L.append(f"> **股权集中度**：第一大股东持股 {top1_ratio:.1f}%，前三合计 {top3_ratio:.1f}%，属于高度集中型股权结构。\n")
-            elif top1_ratio > 15:
-                L.append(f"> **股权集中度**：第一大股东持股 {top1_ratio:.1f}%，前三合计 {top3_ratio:.1f}%，属于相对集中型股权结构。\n")
-
-    # ── 公司分析 ──
-    if company_profile and (company_profile.get('主营业务') or company_profile.get('股东结构')):
-        L.append("---\n## 公司分析\n")
-
-        biz = company_profile.get('主营业务', [])
-        holders = company_profile.get('股东结构', [])
-        info = company_profile.get('基本信息', {})
-
-        # 机会分析
-        L.append("### 最大机会\n")
-        opportunities = []
-
-        # 1. 检查是否有高增长业务（占比低但可能增长）
-        if biz:
-            main_biz = [b for b in biz if b.get('占比', 0) > 1]
-            small_biz = [b for b in biz if 0.5 < b.get('占比', 0) < 15]
-            if small_biz:
-                names = '、'.join([b.get('名称', '') for b in small_biz[:2]])
-                opportunities.append(f"**新业务成长空间**：{names} 等业务当前占比不高，若行业景气向上，有较大的增长弹性")
-
-        # 2. 检查行业属性
-        industry = info.get('所属行业', '')
-        if industry:
-            opportunities.append(f"**行业地位**：所属「{industry}」行业，需关注行业政策和景气度变化")
-
-        # 3. 检查是否有境外业务
-        overseas = [b for b in biz if '境外' in b.get('名称', '')]
-        if overseas and overseas[0].get('占比', 100) < 5:
-            opportunities.append(f"**海外市场**：境外收入占比仅 {overseas[0].get('占比', 0):.1f}%，海外市场拓展潜力大")
-
-        # 4. 检查毛利率趋势
-        high_margin = [b for b in biz if b.get('毛利率', 0) > 30]
-        if high_margin:
-            names = '、'.join([b.get('名称', '') for b in high_margin[:2]])
-            opportunities.append(f"**高毛利业务**：{names} 毛利率较高，盈利能力强")
-
-        for opp in opportunities:
-            L.append(f"- {opp}")
-        if not opportunities:
-            L.append("- 暂无明显业务亮点，需结合行业趋势进一步分析")
+    # 基本信息
+    info = ctx.company_profile.get('基本信息', {})
+    if info:
+        L.append("### 基本信息\n")
+        L.append("| 项目 | 内容 |")
+        L.append("|------|------|")
+        for label, key in [
+            ("公司名称", "公司名称"),
+            ("英文名称", "英文名称"),
+            ("所属行业", "所属行业"),
+            ("证监会行业", "证监会行业"),
+            ("法人代表", "法人代表"),
+            ("董事长", "董事长"),
+            ("总经理", "总经理"),
+            ("注册资本", "注册资本"),
+            ("员工人数", "员工人数"),
+            ("上市日期", "上市日期"),
+            ("成立日期", "成立日期"),
+        ]:
+            val = info.get(key, '')
+            if val:
+                L.append(f"| {label} | {val} |")
         L.append("")
 
-        # 风险分析
-        L.append("### 最大风险\n")
-        risks = []
+    # 公司简介
+    desc = ctx.company_profile.get('公司简介', '')
+    if desc:
+        L.append("### 公司简介\n")
+        L.append(f"{desc}\n")
 
-        # 1. 股权集中风险
-        if holders:
-            top1 = holders[0].get('占流通股比', 0)
-            if top1 > 40:
-                risks.append(f"**股权高度集中**：第一大股东持股 {top1:.1f}%，公司治理和决策依赖少数人，存在治理风险")
-
-        # 2. 业务集中风险
-        if biz:
-            max_biz = max(biz, key=lambda x: x.get('占比', 0))
-            if max_biz.get('占比', 0) > 40:
-                risks.append(f"**业务集中**：{max_biz.get('名称', '')} 收入占比 {max_biz.get('占比', 0):.1f}%，单一业务依赖度高")
-
-        # 3. 估值风险
-        pe = safe_num(quote.get('f9', 0)) if quote else 0
-        if pe > 80:
-            risks.append(f"**估值偏高**：当前 PE {pe:.1f}，估值透支未来增长，面临估值压缩风险")
-
-        # 4. 涨幅风险
-        chg_60 = indicators.get('涨跌幅_60日', 0)
-        if chg_60 > 50:
-            risks.append(f"**短期涨幅过大**：近60日涨幅 {chg_60:.1f}%，获利盘积累，回调压力较大")
-
-        # 5. 财务风险
-        if financial_health:
-            red_flags = financial_health.get('排雷红灯', [])
-            if red_flags:
-                risks.append(f"**财务排雷预警**：{'; '.join(red_flags[:2])}")
-
-        for risk in risks:
-            L.append(f"- {risk}")
-        if not risks:
-            L.append("- 暂无明显重大风险，整体基本面稳健")
+    # 主营业务构成
+    biz = ctx.company_profile.get('主营业务', [])
+    if biz:
+        L.append("### 主营业务构成\n")
+        L.append("| 业务 | 收入(亿) | 占比 | 毛利率 |")
+        L.append("|------|----------|------|--------|")
+        for item in biz:
+            name_str = item.get('名称', '') or ''
+            income = item.get('收入', 0) or 0
+            ratio = item.get('占比', 0) or 0
+            gross = item.get('毛利率', 0) or 0
+            L.append(f"| {name_str} | {income:.2f} | {ratio:.2f}% | {gross:.2f}% |")
         L.append("")
 
-        # 核心洞察
-        L.append("### 核心洞察\n")
-        insights = []
-
-        # 综合判断
-        direction = weighted_score.get('direction', 'hold') if weighted_score else 'hold'
-        score = weighted_score.get('score', 0) if weighted_score else 0
-        stars = rating.get('星级', 3) if rating else 3
-
-        if stars >= 4 and direction == 'buy':
-            insights.append("综合评级较高且技术面看多，基本面与技术面共振，值得关注")
-        elif stars >= 4 and direction == 'hold':
-            insights.append("基本面优质但技术面尚未确认，建议等待技术信号配合")
-        elif stars <= 2 and direction == 'sell':
-            insights.append("基本面和技术面均偏弱，建议回避或减仓")
-        else:
-            insights.append("基本面与技术面信号分化，建议观望等待更明确的方向")
-
-        # 估值判断
-        if pe > 0:
-            if pe < 15:
-                insights.append(f"估值偏低（PE {pe:.1f}），具有安全边际")
-            elif pe > 50:
-                insights.append(f"估值偏高（PE {pe:.1f}），需要业绩高增长支撑")
-
-        for insight in insights:
-            L.append(f"- {insight}")
+    # 股权结构
+    holders = ctx.company_profile.get('股东结构', [])
+    if holders:
+        L.append("### 股权结构（前十大流通股东）\n")
+        L.append("| 股东 | 持股(亿股) | 占流通股 | 性质 |")
+        L.append("|------|-----------|----------|------|")
+        for h in holders[:10]:
+            h_name = h.get('名称', '') or ''
+            h_shares = (h.get('持股数', 0) or 0) / 1e8
+            h_ratio = h.get('占流通股比', 0) or 0
+            h_type = h.get('股东性质', '') or ''
+            L.append(f"| {h_name} | {h_shares:.2f} | {h_ratio:.2f}% | {h_type} |")
         L.append("")
 
-    # ── 总结 ──
+        # 股权集中度分析
+        top1_ratio = (holders[0].get('占流通股比', 0) or 0) if holders else 0
+        top3_ratio = sum((h.get('占流通股比', 0) or 0) for h in holders[:3])
+        if top1_ratio > 30:
+            L.append(f"> **股权集中度**：第一大股东持股 {top1_ratio:.1f}%，前三合计 {top3_ratio:.1f}%，属于高度集中型股权结构。\n")
+        elif top1_ratio > 15:
+            L.append(f"> **股权集中度**：第一大股东持股 {top1_ratio:.1f}%，前三合计 {top3_ratio:.1f}%，属于相对集中型股权结构。\n")
+
+    return L
+
+
+def _section_company_analysis(ctx):
+    """公司分析"""
+    L = []
+    if not (ctx.company_profile and (ctx.company_profile.get('主营业务') or ctx.company_profile.get('股东结构'))):
+        return L
+
+    L.append("---\n## 公司分析\n")
+
+    biz = ctx.company_profile.get('主营业务', [])
+    holders = ctx.company_profile.get('股东结构', [])
+    info = ctx.company_profile.get('基本信息', {})
+
+    # 机会分析
+    L.append("### 最大机会\n")
+    opportunities = []
+
+    # 1. 检查是否有高增长业务（占比低但可能增长）
+    if biz:
+        main_biz = [b for b in biz if (b.get('占比', 0) or 0) > 1]
+        small_biz = [b for b in biz if 0.5 < (b.get('占比', 0) or 0) < 15]
+        if small_biz:
+            names = '、'.join([(b.get('名称', '') or '') for b in small_biz[:2]])
+            opportunities.append(f"**新业务成长空间**：{names} 等业务当前占比不高，若行业景气向上，有较大的增长弹性")
+
+    # 2. 检查行业属性
+    industry = info.get('所属行业', '')
+    if industry:
+        opportunities.append(f"**行业地位**：所属「{industry}」行业，需关注行业政策和景气度变化")
+
+    # 3. 检查是否有境外业务
+    overseas = [b for b in biz if '境外' in (b.get('名称', '') or '')]
+    if overseas and (overseas[0].get('占比', 100) or 100) < 5:
+        opportunities.append(f"**海外市场**：境外收入占比仅 {(overseas[0].get('占比', 0) or 0):.1f}%，海外市场拓展潜力大")
+
+    # 4. 检查毛利率趋势
+    high_margin = [b for b in biz if (b.get('毛利率', 0) or 0) > 30]
+    if high_margin:
+        names = '、'.join([(b.get('名称', '') or '') for b in high_margin[:2]])
+        opportunities.append(f"**高毛利业务**：{names} 毛利率较高，盈利能力强")
+
+    for opp in opportunities:
+        L.append(f"- {opp}")
+    if not opportunities:
+        L.append("- 暂无明显业务亮点，需结合行业趋势进一步分析")
+    L.append("")
+
+    # 风险分析
+    L.append("### 最大风险\n")
+    risks = []
+
+    # 1. 股权集中风险
+    if holders:
+        top1 = holders[0].get('占流通股比', 0)
+        if top1 > 40:
+            risks.append(f"**股权高度集中**：第一大股东持股 {top1:.1f}%，公司治理和决策依赖少数人，存在治理风险")
+
+    # 2. 业务集中风险
+    if biz:
+        max_biz = max(biz, key=lambda x: (x.get('占比', 0) or 0))
+        if (max_biz.get('占比', 0) or 0) > 40:
+            risks.append(f"**业务集中**：{max_biz.get('名称', '') or ''} 收入占比 {(max_biz.get('占比', 0) or 0):.1f}%，单一业务依赖度高")
+
+    # 3. 估值风险
+    pe = safe_num(ctx.quote.get('f9', 0)) if ctx.quote else 0
+    if pe > 80:
+        risks.append(f"**估值偏高**：当前 PE {pe:.1f}，估值透支未来增长，面临估值压缩风险")
+
+    # 4. 涨幅风险
+    chg_60 = ctx.indicators.get('涨跌幅_60日', 0)
+    if chg_60 > 50:
+        risks.append(f"**短期涨幅过大**：近60日涨幅 {chg_60:.1f}%，获利盘积累，回调压力较大")
+
+    # 5. 财务风险
+    if ctx.financial_health:
+        red_flags = ctx.financial_health.get('排雷红灯', [])
+        if red_flags:
+            risks.append(f"**财务排雷预警**：{'; '.join(red_flags[:2])}")
+
+    for risk in risks:
+        L.append(f"- {risk}")
+    if not risks:
+        L.append("- 暂无明显重大风险，整体基本面稳健")
+    L.append("")
+
+    # 核心洞察
+    L.append("### 核心洞察\n")
+    insights = []
+
+    # 综合判断
+    direction = ctx.weighted_score.get('direction', 'hold') if ctx.weighted_score else 'hold'
+    score = ctx.weighted_score.get('score', 0) if ctx.weighted_score else 0
+    stars = ctx.rating.get('星级', 3) if ctx.rating else 3
+
+    if stars >= 4 and direction == 'buy':
+        insights.append("综合评级较高且技术面看多，基本面与技术面共振，值得关注")
+    elif stars >= 4 and direction == 'hold':
+        insights.append("基本面优质但技术面尚未确认，建议等待技术信号配合")
+    elif stars <= 2 and direction == 'sell':
+        insights.append("基本面和技术面均偏弱，建议回避或减仓")
+    else:
+        insights.append("基本面与技术面信号分化，建议观望等待更明确的方向")
+
+    # 估值判断
+    if pe > 0:
+        if pe < 15:
+            insights.append(f"估值偏低（PE {pe:.1f}），具有安全边际")
+        elif pe > 50:
+            insights.append(f"估值偏高（PE {pe:.1f}），需要业绩高增长支撑")
+
+    for insight in insights:
+        L.append(f"- {insight}")
+    L.append("")
+
+    return L
+
+
+def _section_summary(ctx):
+    """总结"""
+    L = []
     L.append("---\n## 总结\n")
 
     # 投资评级
-    if rating:
-        L.append(f"**综合评级：{rating['星级符号']}（{rating['星级']}/5星）**\n")
+    if ctx.rating:
+        L.append(f"**综合评级：{ctx.rating['星级符号']}（{ctx.rating['星级']}/5星）**\n")
 
     # 涨跌
-    chg_today = indicators.get("涨跌幅_今日", 0)
-    chg_5d = indicators.get("涨跌幅_5日", 0)
-    chg_20d = indicators.get("涨跌幅_20日", 0)
-    chg_60d = indicators.get("涨跌幅_60日", 0)
-    L.append(f"**最新价 {price} 元**，今日涨跌 {fmt_pct(chg_today)}。"
+    chg_today = ctx.indicators.get("涨跌幅_今日", 0)
+    chg_5d = ctx.indicators.get("涨跌幅_5日", 0)
+    chg_20d = ctx.indicators.get("涨跌幅_20日", 0)
+    chg_60d = ctx.indicators.get("涨跌幅_60日", 0)
+    L.append(f"**最新价 {ctx.price} 元**，今日涨跌 {fmt_pct(chg_today)}。"
              f"近5日 {fmt_pct(chg_5d)}，近20日 {fmt_pct(chg_20d)}，近60日 {fmt_pct(chg_60d)}。")
 
     # 技术面一句话
-    dif = indicators.get("DIF", 0)
-    dea = indicators.get("DEA", 0)
+    dif = ctx.indicators.get("DIF", 0)
+    dea = ctx.indicators.get("DEA", 0)
     macd_signal = "MACD金叉（看涨）" if dif > dea else "MACD死叉（看跌）"
-    k_val = indicators.get("K", 50)
+    k_val = ctx.indicators.get("K", 50)
     kdj_signal = "KDJ超买" if k_val > 80 else "KDJ超卖" if k_val < 20 else "KDJ中性"
-    ma5 = indicators.get("MA5", 0)
-    ma20 = indicators.get("MA20", 0)
-    ma60 = indicators.get("MA60", 0)
+    ma5 = ctx.indicators.get("MA5", 0)
+    ma20 = ctx.indicators.get("MA20", 0)
+    ma60 = ctx.indicators.get("MA60", 0)
     trend_short = "短期多头" if ma5 > ma20 else "短期空头"
     trend_mid = "中期多头" if ma20 > ma60 else "中期空头"
     L.append(f"**技术面**：{macd_signal}，{kdj_signal}，均线{trend_short}、{trend_mid}。")
 
     # 资金面一句话
-    if fund_flow:
-        main_today = safe_num(fund_flow.get("今日", {}).get("f62", 0))
-        main_5d = safe_num(fund_flow.get("5日", {}).get("f62", 0))
+    if ctx.fund_flow:
+        main_today = safe_num(ctx.fund_flow.get("今日", {}).get("f62", 0))
+        main_5d = safe_num(ctx.fund_flow.get("5日", {}).get("f62", 0))
         fund_desc = "主力资金"
         if main_today > 0:
             fund_desc += f"今日净流入{fmt_num(main_today)}"
@@ -1010,16 +1060,18 @@ def generate_report(code, name, df, indicators, fund_flow, north_flow, quote, ne
         L.append(f"**资金面**：{fund_desc}。")
 
     # 基本面一句话
-    pe = quote.get("f9", "")
-    pb = quote.get("f23", "")
-    mv = quote.get("f20", 0)
+    pe = safe_num(ctx.quote.get("f9", 0)) if ctx.quote else 0
+    pb = safe_num(ctx.quote.get("f23", 0)) if ctx.quote else 0
+    mv = ctx.quote.get("f20", 0) if ctx.quote else 0
     if pe or pb:
-        L.append(f"**基本面**：市盈率(动) {pe}，市净率 {pb}，总市值 {fmt_num(mv) if isinstance(mv,(int,float)) else mv}。")
+        pe_str = f"{pe:.2f}" if pe else "-"
+        pb_str = f"{pb:.2f}" if pb else "-"
+        L.append(f"**基本面**：市盈率(动) {pe_str}，市净率 {pb_str}，总市值 {fmt_num(mv) if isinstance(mv,(int,float)) else mv}。")
 
     # 财务排雷一句话
-    if financial_health:
-        red_flags = financial_health.get("排雷红灯", [])
-        warnings = financial_health.get("排雷预警", [])
+    if ctx.financial_health:
+        red_flags = ctx.financial_health.get("排雷红灯", [])
+        warnings = ctx.financial_health.get("排雷预警", [])
         if red_flags:
             L.append(f"**财务排雷**：发现 {len(red_flags)} 项红灯信号，需重点关注。")
         elif warnings:
@@ -1028,10 +1080,14 @@ def generate_report(code, name, df, indicators, fund_flow, north_flow, quote, ne
             L.append("**财务排雷**：各项指标正常，无明显风险信号。")
 
     L.append("")
+    return L
 
-    # ── 一、行情概览 ──
+
+def _section_market_overview(ctx):
+    """行情概览"""
+    L = []
     L.append("\n---\n## 一、行情概览\n")
-    last = df.iloc[-1]
+    last = ctx.df.iloc[-1]
     L.append("| 指标 | 数值 | 说明 |")
     L.append("|------|------|------|")
     for label, key, desc in [
@@ -1062,11 +1118,16 @@ def generate_report(code, name, df, indicators, fund_flow, north_flow, quote, ne
         ("20日", "涨跌幅_20日", "近一个月"),
         ("60日", "涨跌幅_60日", "近三个月"),
     ]:
-        v = indicators.get(key)
+        v = ctx.indicators.get(key)
         if v is not None:
             L.append(f"| {pn} | {fmt_pct(v)} | {desc} |")
 
-    # ── 二、技术分析 ──
+    return L
+
+
+def _section_technical_analysis(ctx):
+    """技术分析"""
+    L = []
     L.append("\n---\n## 二、技术分析\n")
 
     # 均线
@@ -1077,9 +1138,9 @@ def generate_report(code, name, df, indicators, fund_flow, north_flow, quote, ne
     L.append("| 均线 | 数值 | 位置 |")
     L.append("|------|------|------|")
     for p in [5, 10, 20, 60, 120, 250]:
-        ma = indicators.get(f"MA{p}")
+        ma = ctx.indicators.get(f"MA{p}")
         if ma:
-            L.append(f"| MA{p} | {ma:.2f} | {'价格在上（多头）' if price > ma else '价格在下（空头）'} |")
+            L.append(f"| MA{p} | {ma:.2f} | {'价格在上（多头）' if ctx.price > ma else '价格在下（空头）'} |")
 
     # MACD
     L.append("\n### 2.2 MACD\n")
@@ -1090,9 +1151,9 @@ def generate_report(code, name, df, indicators, fund_flow, north_flow, quote, ne
     L.append("  - 红柱（正值）：多头占优，柱子放大表示多头增强")
     L.append("  - 绿柱（负值）：空头占优，柱子放大表示空头增强")
     L.append("- **金叉**（DIF上穿DEA）→ 买入信号；**死叉**（DIF下穿DEA）→ 卖出信号\n")
-    dif_val = indicators.get("DIF", 0)
-    dea_val = indicators.get("DEA", 0)
-    macd_val = indicators.get("MACD", 0)
+    dif_val = ctx.indicators.get("DIF", 0)
+    dea_val = ctx.indicators.get("DEA", 0)
+    macd_val = ctx.indicators.get("MACD", 0)
     dif_signal = "短期趋势强于长期" if dif_val > 0 else "短期趋势弱于长期"
     dea_signal = "中期趋势向上" if dea_val > 0 else "中期趋势向下"
     macd_signal = "金叉（看涨）" if dif_val > dea_val else "死叉（看跌）"
@@ -1110,7 +1171,7 @@ def generate_report(code, name, df, indicators, fund_flow, north_flow, quote, ne
     L.append("- **J值**：K与D的偏离程度，波动最大，可提前预警拐点")
     L.append("- **K值 > 80**：超买区，价格偏高，可能回调")
     L.append("- **K值 < 20**：超卖区，价格偏低，可能反弹\n")
-    kv, dv, jv = indicators.get("K",50), indicators.get("D",50), indicators.get("J",50)
+    kv, dv, jv = ctx.indicators.get("K",50), ctx.indicators.get("D",50), ctx.indicators.get("J",50)
     k_zone = "超买区（>80）" if kv > 80 else "超卖区（<20）" if kv < 20 else "中性区"
     d_zone = "超买区（>80）" if dv > 80 else "超卖区（<20）" if dv < 20 else "中性区"
     j_zone = "超买区（>80）" if jv > 80 else "超卖区（<20）" if jv < 20 else "中性区"
@@ -1132,7 +1193,7 @@ def generate_report(code, name, df, indicators, fund_flow, north_flow, quote, ne
     L.append("| 周期 | 数值 | 区域 | 含义 |")
     L.append("|------|------|------|------|")
     for p in [6, 12, 24]:
-        rsi = indicators.get(f"RSI{p}", 50)
+        rsi = ctx.indicators.get(f"RSI{p}", 50)
         if rsi > 80:
             z = "超买区"
             desc = "短期可能见顶"
@@ -1160,9 +1221,9 @@ def generate_report(code, name, df, indicators, fund_flow, north_flow, quote, ne
     L.append("- **中轨**（20日均线）：趋势线，价格在中轨上方为多头，下方为空头")
     L.append("- **下轨**（中轨-2倍标准差）：支撑位，价格触及下轨可能反弹")
     L.append("- **带宽**：上下轨之间的距离，带宽收窄表示即将变盘，带宽扩大表示趋势延续\n")
-    boll_up = indicators.get("BOLL_UP", 0)
-    boll_mid = indicators.get("BOLL_MID", 0)
-    boll_dn = indicators.get("BOLL_DN", 0)
+    boll_up = ctx.indicators.get("BOLL_UP", 0)
+    boll_mid = ctx.indicators.get("BOLL_MID", 0)
+    boll_dn = ctx.indicators.get("BOLL_DN", 0)
     boll_width = (boll_up - boll_dn) / boll_mid * 100 if boll_mid > 0 else 0
     L.append(f"| 轨道 | 数值 | 含义 |")
     L.append(f"|------|------|------|")
@@ -1170,27 +1231,32 @@ def generate_report(code, name, df, indicators, fund_flow, north_flow, quote, ne
     L.append(f"| 中轨 | {boll_mid:.2f} | 20日均线（趋势线） |")
     L.append(f"| 下轨 | {boll_dn:.2f} | 支撑位（超卖线） |")
     L.append(f"| 带宽 | {boll_width:.2f}% | 波动率（越窄越可能变盘） |")
-    if price:
-        if price > boll_up:
-            L.append(f"\n> 当前价格 {price} **突破上轨**，处于超买区域，注意回调风险")
-        elif price > boll_mid:
-            L.append(f"\n> 当前价格 {price} 在**中轨与上轨之间**，多头趋势")
-        elif price > boll_dn:
-            L.append(f"\n> 当前价格 {price} 在**下轨与中轨之间**，空头趋势")
+    if ctx.price:
+        if ctx.price > boll_up:
+            L.append(f"\n> 当前价格 {ctx.price} **突破上轨**，处于超买区域，注意回调风险")
+        elif ctx.price > boll_mid:
+            L.append(f"\n> 当前价格 {ctx.price} 在**中轨与上轨之间**，多头趋势")
+        elif ctx.price > boll_dn:
+            L.append(f"\n> 当前价格 {ctx.price} 在**下轨与中轨之间**，空头趋势")
         else:
-            L.append(f"\n> 当前价格 {price} **跌破下轨**，处于超卖区域，可能反弹")
+            L.append(f"\n> 当前价格 {ctx.price} **跌破下轨**，处于超卖区域，可能反弹")
 
     # ATR
-    atr = indicators.get("ATR14", 0)
+    atr = ctx.indicators.get("ATR14", 0)
     if atr:
         L.append(f"\n**ATR14**（14日平均真实波幅）：{atr:.2f} 元")
         L.append("- ATR 反映近期价格波动幅度，数值越大波动越剧烈")
         L.append("- 常用于计算止损位（如：止损价 = 当前价 - 2×ATR）")
 
-    # ── 三、资金分析 ──
+    return L
+
+
+def _section_fund_flow(ctx):
+    """资金分析"""
+    L = []
     L.append("\n---\n## 三、资金分析\n")
 
-    if fund_flow:
+    if ctx.fund_flow:
         L.append("资金流向反映市场中不同规模资金的买卖方向。")
         L.append("- **主力资金**（超大单+大单）：通常代表机构动向，对股价影响最大")
         L.append("- **超大单**（>100万元）：通常为大型机构或基金操作")
@@ -1208,7 +1274,7 @@ def generate_report(code, name, df, indicators, fund_flow, north_flow, quote, ne
             ("f84", "f87", "小单（<4万元）"),
         ]
         for period in ["今日", "3日", "5日", "10日"]:
-            data = fund_flow.get(period)
+            data = ctx.fund_flow.get(period)
             if not data:
                 continue
             L.append(f"### {period}资金流向\n")
@@ -1223,10 +1289,15 @@ def generate_report(code, name, df, indicators, fund_flow, north_flow, quote, ne
     else:
         L.append("> 暂无资金流向数据（网络不稳定，部分接口可能获取失败）\n")
 
-    # ── 四、基本面分析 ──
+    return L
+
+
+def _section_fundamentals(ctx):
+    """基本面分析"""
+    L = []
     L.append("---\n## 四、基本面分析\n")
 
-    if quote:
+    if ctx.quote:
         L.append("### 4.1 估值指标\n")
         L.append("| 指标 | 数值 | 说明 |")
         L.append("|------|------|------|")
@@ -1237,7 +1308,7 @@ def generate_report(code, name, df, indicators, fund_flow, north_flow, quote, ne
             ("总市值", "f20", "公司总价值（股价×总股本）"),
             ("流通市值", "f21", "可在市场上交易的股票总价值"),
         ]:
-            v = quote.get(key, "-")
+            v = ctx.quote.get(key, "-")
             if "市值" in label and isinstance(v, (int, float)): v = fmt_num(v)
             L.append(f"| {label} | {v} | {desc} |")
 
@@ -1251,7 +1322,7 @@ def generate_report(code, name, df, indicators, fund_flow, north_flow, quote, ne
             ("净利润同比", "f41", "净利润同比增长率"),
             ("资产负债率", "f34", "总负债/总资产，越高财务风险越大"),
         ]:
-            v = quote.get(key, "-")
+            v = ctx.quote.get(key, "-")
             if isinstance(v, (int, float)):
                 # 如果值超过1000，可能是原始数值而非百分比，显示为金额
                 if abs(v) > 1000:
@@ -1262,228 +1333,278 @@ def generate_report(code, name, df, indicators, fund_flow, north_flow, quote, ne
     else:
         L.append("> 暂无基本面数据\n")
 
-    # ── 五、财务排雷 ──
-    if financial_health:
-        L.append("\n---\n## 五、财务排雷\n")
-        L.append("财务排雷用于检查利润质量、现金流匹配度和潜在财务风险。\n")
+    return L
 
-        # 核心指标表
-        L.append("### 5.1 核心指标\n")
-        L.append("| 指标 | 数值 | 说明 |")
-        L.append("|------|------|------|")
-        for label, key, desc, fmt in [
-            ("市盈率(动态)", "PE", "股价/每股收益，越低越便宜", "num"),
-            ("市净率", "PB", "股价/每股净资产，<1为破净", "num"),
-            ("ROE", "ROE", "净资产收益率，衡量盈利能力", "pct"),
-            ("毛利率", "毛利率", "收入扣除直接成本后的利润率", "pct"),
-            ("营业收入", "营收同比", "公司总收入规模", "amount"),
-            ("净利润同比", "净利润同比", "净利润同比增长率", "pct"),
-            ("资产负债率", "资产负债率", "总负债/总资产，越高财务风险越大", "pct"),
-        ]:
-            v = financial_health.get(key, "-")
-            if isinstance(v, (int, float)):
-                if fmt == "amount":
-                    v = fmt_num(v)
-                elif fmt == "pct":
-                    v = f"{v:.2f}%"
-                else:
-                    v = f"{v:.2f}"
-            L.append(f"| {label} | {v} | {desc} |")
 
-        # 排雷结果
-        red_flags = financial_health.get("排雷红灯", [])
-        warnings = financial_health.get("排雷预警", [])
+def _section_financial_screen(ctx):
+    """财务排雷"""
+    L = []
+    if not ctx.financial_health:
+        return L
 
-        L.append("\n### 5.2 排雷结论\n")
-        if red_flags:
-            L.append("**红灯预警（需重点关注）：**")
-            for flag in red_flags:
-                L.append(f"- [!] {flag}")
-        if warnings:
-            L.append("\n**黄灯预警（整体可控）：**")
-            for w in warnings:
-                L.append(f"- [~] {w}")
-        if not red_flags and not warnings:
-            L.append("[OK] 各项指标正常，无明显财务风险信号。")
+    L.append("\n---\n## 五、财务排雷\n")
+    L.append("财务排雷用于检查利润质量、现金流匹配度和潜在财务风险。\n")
 
-        # 估值检查
-        pe_val = financial_health.get("PE", 0)
-        chg_1y = indicators.get("涨跌幅_60日", 0) * 4  # 近似年涨幅
-        if pe_val > 80 or chg_1y > 200:
-            L.append("\n### 5.3 逆向定价触发检查\n")
-            L.append("当前估值或涨幅触发逆向定价条件，需特别关注价格是否透支未来增长：\n")
-            L.append("| 触发项 | 阈值 | 当前数据 | 是否触发 |")
-            L.append("|--------|------|----------|----------|")
-            L.append(f"| PE-TTM | > 80 | {pe_val:.1f} | {'是' if pe_val > 80 else '否'} |")
-            L.append(f"| 近似年涨幅 | > 200% | {chg_1y:.1f}% | {'是' if chg_1y > 200 else '否'} |")
-            L.append("\n**建议**：高估值时需验证下一季度业绩能否支撑当前市值，否则面临估值压缩风险。")
+    # 核心指标表
+    L.append("### 5.1 核心指标\n")
+    L.append("| 指标 | 数值 | 说明 |")
+    L.append("|------|------|------|")
+    for label, key, desc, fmt in [
+        ("市盈率(动态)", "PE", "股价/每股收益，越低越便宜", "num"),
+        ("市净率", "PB", "股价/每股净资产，<1为破净", "num"),
+        ("ROE", "ROE", "净资产收益率，衡量盈利能力", "pct"),
+        ("毛利率", "毛利率", "收入扣除直接成本后的利润率", "pct"),
+        ("营业收入", "营收同比", "公司总收入规模", "amount"),
+        ("净利润同比", "净利润同比", "净利润同比增长率", "pct"),
+        ("资产负债率", "资产负债率", "总负债/总资产，越高财务风险越大", "pct"),
+    ]:
+        v = ctx.financial_health.get(key, "-")
+        if isinstance(v, (int, float)):
+            if fmt == "amount":
+                v = fmt_num(v)
+            elif fmt == "pct":
+                v = f"{v:.2f}%"
+            else:
+                v = f"{v:.2f}"
+        L.append(f"| {label} | {v} | {desc} |")
 
-    # ── 六、新闻动态 ──
+    # 排雷结果
+    red_flags = ctx.financial_health.get("排雷红灯", [])
+    warnings = ctx.financial_health.get("排雷预警", [])
+
+    L.append("\n### 5.2 排雷结论\n")
+    if red_flags:
+        L.append("**红灯预警（需重点关注）：**")
+        for flag in red_flags:
+            L.append(f"- [!] {flag}")
+    if warnings:
+        L.append("\n**黄灯预警（整体可控）：**")
+        for w in warnings:
+            L.append(f"- [~] {w}")
+    if not red_flags and not warnings:
+        L.append("[OK] 各项指标正常，无明显财务风险信号。")
+
+    # 估值检查
+    pe_val = ctx.financial_health.get("PE", 0)
+    # 年化涨幅计算：优先用 250 日数据，不足时用 60 日复合增长率近似
+    if len(ctx.df) >= 250:
+        chg_1y = ((ctx.df["收盘"].iloc[-1] / ctx.df["收盘"].iloc[-250]) - 1) * 100
+    elif len(ctx.df) >= 60:
+        chg_60 = ctx.indicators.get("涨跌幅_60日", 0)
+        chg_1y = ((1 + chg_60 / 100) ** 4 - 1) * 100  # 复合增长率
+    else:
+        chg_1y = ctx.indicators.get("涨跌幅_60日", 0) * 4  # 数据不足时简单线性近似
+    if pe_val > 80 or chg_1y > 200:
+        L.append("\n### 5.3 逆向定价触发检查\n")
+        L.append("当前估值或涨幅触发逆向定价条件，需特别关注价格是否透支未来增长：\n")
+        L.append("| 触发项 | 阈值 | 当前数据 | 是否触发 |")
+        L.append("|--------|------|----------|----------|")
+        L.append(f"| PE-TTM | > 80 | {pe_val:.1f} | {'是' if pe_val > 80 else '否'} |")
+        L.append(f"| 近似年涨幅 | > 200% | {chg_1y:.1f}% | {'是' if chg_1y > 200 else '否'} |")
+        L.append("\n**建议**：高估值时需验证下一季度业绩能否支撑当前市值，否则面临估值压缩风险。")
+
+    return L
+
+
+def _section_news(ctx):
+    """新闻动态"""
+    L = []
     L.append("\n---\n## 六、新闻动态\n")
-    if not news_df.empty:
+    if not ctx.news_df.empty:
         L.append("| 时间 | 标题 | 来源 |")
         L.append("|------|------|------|")
-        for _, row in news_df.head(15).iterrows():
+        for _, row in ctx.news_df.head(15).iterrows():
             L.append(f"| {row['发布时间']} | {row['新闻标题']} | {row['文章来源']} |")
     else:
         L.append("> 暂无近期新闻")
 
-    # ── 七、行业板块 ──
+    return L
+
+
+def _section_industry_board(ctx):
+    """行业板块"""
+    L = []
     L.append("\n---\n## 七、行业板块排名\n")
-    if not industry_df.empty:
+    if not ctx.industry_df.empty:
         L.append("当日行业板块涨跌排名（前20）：\n")
         L.append("| 排名 | 板块 | 涨跌幅 | 换手率 |")
         L.append("|------|------|--------|--------|")
-        for i, (_, row) in enumerate(industry_df.head(20).iterrows(), 1):
+        for i, (_, row) in enumerate(ctx.industry_df.head(20).iterrows(), 1):
             chg = row['涨跌幅']
             L.append(f"| {i} | {row['板块']} | {fmt_pct(chg) if isinstance(chg,(int,float)) else chg} | {row.get('换手率','-')} |")
     else:
         L.append("> 暂无行业数据")
 
-    # ── 八、扩展技术指标 ──
-    if extended_indicators:
-        L.append("\n---\n## 八、扩展技术指标\n")
+    return L
 
-        # RSI 背离
-        rsi_div = extended_indicators.get('RSI背离', {})
-        L.append("### 8.1 RSI 背离检测\n")
-        L.append("RSI 背离是重要的趋势反转信号：")
-        L.append("- **顶背离**：价格创新高但 RSI 未创新高，看跌信号")
-        L.append("- **底背离**：价格创新低但 RSI 未创新低，看涨信号\n")
-        L.append(f"- **检测结果**：{rsi_div.get('类型', '无背离')}")
-        L.append(f"- **信号**：{rsi_div.get('信号', '无')}")
-        L.append(f"- **可靠性**：{rsi_div.get('可靠性', '低')}")
 
-        # MACD 柱状图
-        macd_hist = extended_indicators.get('MACD柱状图', {})
-        L.append("\n### 8.2 MACD 柱状图分析\n")
-        L.append("MACD 柱状图反映多空动能的强弱变化：")
-        L.append("- 红柱放大 → 多头增强；红柱缩小 → 多头减弱")
-        L.append("- 绿柱放大 → 空头增强；绿柱缩小 → 空头减弱\n")
-        L.append(f"- **连续红柱天数**：{macd_hist.get('连续红柱天数', 0)}")
-        L.append(f"- **连续绿柱天数**：{macd_hist.get('连续绿柱天数', 0)}")
-        L.append(f"- **趋势判断**：{macd_hist.get('趋势判断', '无')}")
-        L.append(f"- **信号**：{macd_hist.get('信号', '无')}")
+def _section_extended_indicators(ctx):
+    """扩展技术指标"""
+    L = []
+    if not ctx.extended_indicators:
+        return L
 
-        # 成交量异动
-        vol_anomaly = extended_indicators.get('成交量异动', {})
-        L.append("\n### 8.3 成交量异动检测\n")
-        L.append("成交量异动反映市场情绪和资金行为：")
-        L.append("- 放量：可能有重大消息或主力行为")
-        L.append("- 缩量：市场观望情绪浓厚\n")
-        L.append(f"- **状态**：{vol_anomaly.get('状态', '正常')}")
-        L.append(f"- **倍数**：{vol_anomaly.get('倍数', 0)}")
-        L.append(f"- **信号**：{vol_anomaly.get('信号', '无')}")
+    L.append("\n---\n## 八、扩展技术指标\n")
 
-        # K 线形态
-        kline_patterns = extended_indicators.get('K线形态', [])
-        L.append("\n### 8.4 K 线形态识别\n")
-        if kline_patterns:
-            L.append("| 形态 | 信号 | 可靠性 |")
-            L.append("|------|------|--------|")
-            for p in kline_patterns:
-                L.append(f"| {p.get('形态', '')} | {p.get('信号', '')} | {p.get('可靠性', '')} |")
-        else:
-            L.append("近 5 个交易日未识别到典型 K 线形态。")
+    # RSI 背离
+    rsi_div = ctx.extended_indicators.get('RSI背离', {})
+    L.append("### 8.1 RSI 背离检测\n")
+    L.append("RSI 背离是重要的趋势反转信号：")
+    L.append("- **顶背离**：价格创新高但 RSI 未创新高，看跌信号")
+    L.append("- **底背离**：价格创新低但 RSI 未创新低，看涨信号\n")
+    L.append(f"- **检测结果**：{rsi_div.get('类型', '无背离')}")
+    L.append(f"- **信号**：{rsi_div.get('信号', '无')}")
+    L.append(f"- **可靠性**：{rsi_div.get('可靠性', '低')}")
 
-        # 筹码分布
-        chip_dist = extended_indicators.get('筹码分布', {})
-        L.append("\n### 8.5 筹码分布\n")
-        L.append("筹码分布反映持仓成本结构：")
-        L.append(f"- **平均成本**：{chip_dist.get('平均成本', 0):.2f} 元")
-        L.append(f"- **获利盘比例**：{chip_dist.get('获利盘比例', 0) * 100:.1f}%")
-        L.append(f"- **套牢盘比例**：{chip_dist.get('套牢盘比例', 0) * 100:.1f}%")
-        L.append(f"- **筹码集中度**：{chip_dist.get('筹码集中度', '未知')}")
+    # MACD 柱状图
+    macd_hist = ctx.extended_indicators.get('MACD柱状图', {})
+    L.append("\n### 8.2 MACD 柱状图分析\n")
+    L.append("MACD 柱状图反映多空动能的强弱变化：")
+    L.append("- 红柱放大 → 多头增强；红柱缩小 → 多头减弱")
+    L.append("- 绿柱放大 → 空头增强；绿柱缩小 → 空头减弱\n")
+    L.append(f"- **连续红柱天数**：{macd_hist.get('连续红柱天数', 0)}")
+    L.append(f"- **连续绿柱天数**：{macd_hist.get('连续绿柱天数', 0)}")
+    L.append(f"- **趋势判断**：{macd_hist.get('趋势判断', '无')}")
+    L.append(f"- **信号**：{macd_hist.get('信号', '无')}")
 
-    # ── 九、估值分位数分析 ──
-    if valuation_percentile:
-        L.append("\n---\n## 九、估值分位数分析\n")
-        L.append("估值分位数反映当前估值在近 5 年历史中的位置：")
-        L.append("- 0%~20%：低估区间，可能存在投资机会")
-        L.append("- 20%~40%：合理偏低")
-        L.append("- 40%~60%：合理区间")
-        L.append("- 60%~80%：合理偏高")
-        L.append("- 80%~100%：高估区间，需注意风险\n")
+    # 成交量异动
+    vol_anomaly = ctx.extended_indicators.get('成交量异动', {})
+    L.append("\n### 8.3 成交量异动检测\n")
+    L.append("成交量异动反映市场情绪和资金行为：")
+    L.append("- 放量：可能有重大消息或主力行为")
+    L.append("- 缩量：市场观望情绪浓厚\n")
+    L.append(f"- **状态**：{vol_anomaly.get('状态', '正常')}")
+    L.append(f"- **倍数**：{vol_anomaly.get('倍数', 0)}")
+    L.append(f"- **信号**：{vol_anomaly.get('信号', '无')}")
 
-        L.append("| 指标 | 当前值 | 分位数 | 估值区间 |")
-        L.append("|------|--------|--------|----------|")
-        for metric in ["PE", "PB", "股息率"]:
-            info = valuation_percentile.get(metric, {})
-            current = info.get('当前值', 0)
-            percentile = info.get('分位数')
-            zone = info.get('区间', '数据不足')
-            pct_str = f"{percentile:.1f}%" if percentile is not None else "-"
-            L.append(f"| {metric} | {current:.2f} | {pct_str} | {zone} |")
+    # K 线形态
+    kline_patterns = ctx.extended_indicators.get('K线形态', [])
+    L.append("\n### 8.4 K 线形态识别\n")
+    if kline_patterns:
+        L.append("| 形态 | 信号 | 可靠性 |")
+        L.append("|------|------|--------|")
+        for p in kline_patterns:
+            L.append(f"| {p.get('形态', '')} | {p.get('信号', '')} | {p.get('可靠性', '')} |")
+    else:
+        L.append("近 5 个交易日未识别到典型 K 线形态。")
 
-        summary = valuation_percentile.get('综合评价', '')
-        if summary:
-            L.append(f"\n**综合评价**：{summary}")
+    # 筹码分布
+    chip_dist = ctx.extended_indicators.get('筹码分布', {})
+    L.append("\n### 8.5 筹码分布\n")
+    L.append("筹码分布反映持仓成本结构：")
+    L.append(f"- **平均成本**：{chip_dist.get('平均成本', 0):.2f} 元")
+    L.append(f"- **获利盘比例**：{chip_dist.get('获利盘比例', 0) * 100:.1f}%")
+    L.append(f"- **套牢盘比例**：{chip_dist.get('套牢盘比例', 0) * 100:.1f}%")
+    L.append(f"- **筹码集中度**：{chip_dist.get('筹码集中度', '未知')}")
 
-    # ── 十、行业对比分析 ──
-    if industry_comparison:
-        L.append("\n---\n## 十、行业对比分析\n")
+    return L
 
-        industry_code = industry_comparison.get('行业', '')
-        L.append(f"所属行业板块：{industry_code}\n")
 
-        # 估值对比
-        valuation_comp = industry_comparison.get('估值对比', {})
-        L.append("### 10.1 估值对比\n")
-        pe_rank = valuation_comp.get('PE排名', 0)
-        pb_rank = valuation_comp.get('PB排名', 0)
-        roe_rank = valuation_comp.get('ROE排名', 0)
-        total_peers = len(valuation_comp.get('估值排名', []))
-        if total_peers > 0:
-            L.append(f"- **PE 排名**：第 {pe_rank}/{total_peers} 名（越低越便宜）")
-            L.append(f"- **PB 排名**：第 {pb_rank}/{total_peers} 名（越低越便宜）")
-            L.append(f"- **ROE 排名**：第 {roe_rank}/{total_peers} 名（越高越好）")
-        else:
-            L.append("> 暂无行业估值对比数据")
+def _section_valuation_percentile(ctx):
+    """估值分位数分析"""
+    L = []
+    if not ctx.valuation_percentile:
+        return L
 
-        # 行业景气度
-        sentiment = industry_comparison.get('行业景气度', {})
-        L.append("\n### 10.2 行业景气度\n")
-        L.append(f"- **涨跌幅**：{sentiment.get('涨跌幅', 0):.2f}%")
-        L.append(f"- **换手率**：{sentiment.get('换手率', 0):.2f}%")
-        L.append(f"- **资金流向**：{sentiment.get('资金流入', '未知')}")
-        L.append(f"- **景气度评估**：{sentiment.get('景气度', '中性')}")
+    L.append("\n---\n## 九、估值分位数分析\n")
+    L.append("估值分位数反映当前估值在近 5 年历史中的位置：")
+    L.append("- 0%~20%：低估区间，可能存在投资机会")
+    L.append("- 20%~40%：合理偏低")
+    L.append("- 40%~60%：合理区间")
+    L.append("- 60%~80%：合理偏高")
+    L.append("- 80%~100%：高估区间，需注意风险\n")
 
-        # 龙头溢价
-        leader = industry_comparison.get('龙头溢价', {})
-        L.append("\n### 10.3 龙头溢价分析\n")
-        if leader.get('龙头公司'):
-            L.append(f"- **龙头公司**：{leader.get('龙头公司', '')}")
-            L.append(f"- **龙头 PE**：{leader.get('龙头PE', 0):.2f}")
-            L.append(f"- **行业平均 PE**：{leader.get('行业平均PE', 0):.2f}")
-            L.append(f"- **溢价率**：{leader.get('溢价率', 0):.2f}%")
-            L.append(f"- **溢价合理性**：{leader.get('溢价合理性', '数据不足')}")
-        else:
-            L.append("> 暂无龙头溢价数据")
+    L.append("| 指标 | 当前值 | 分位数 | 估值区间 |")
+    L.append("|------|--------|--------|----------|")
+    for metric in ["PE", "PB", "股息率"]:
+        info = ctx.valuation_percentile.get(metric, {})
+        current = info.get('当前值', 0)
+        percentile = info.get('分位数')
+        zone = info.get('区间', '数据不足')
+        pct_str = f"{percentile:.1f}%" if percentile is not None else "-"
+        L.append(f"| {metric} | {current:.2f} | {pct_str} | {zone} |")
 
-    # ── 十一、反证清单与跟踪因子 ──
+    summary = ctx.valuation_percentile.get('综合评价', '')
+    if summary:
+        L.append(f"\n**综合评价**：{summary}")
+
+    return L
+
+
+def _section_industry_comparison(ctx):
+    """行业对比分析"""
+    L = []
+    if not ctx.industry_comparison:
+        return L
+
+    L.append("\n---\n## 十、行业对比分析\n")
+
+    industry_code = ctx.industry_comparison.get('行业', '')
+    L.append(f"所属行业板块：{industry_code}\n")
+
+    # 估值对比
+    valuation_comp = ctx.industry_comparison.get('估值对比', {})
+    L.append("### 10.1 估值对比\n")
+    pe_rank = valuation_comp.get('PE排名', 0)
+    pb_rank = valuation_comp.get('PB排名', 0)
+    roe_rank = valuation_comp.get('ROE排名', 0)
+    total_peers = len(valuation_comp.get('估值排名', []))
+    if total_peers > 0:
+        L.append(f"- **PE 排名**：第 {pe_rank}/{total_peers} 名（越低越便宜）")
+        L.append(f"- **PB 排名**：第 {pb_rank}/{total_peers} 名（越低越便宜）")
+        L.append(f"- **ROE 排名**：第 {roe_rank}/{total_peers} 名（越高越好）")
+    else:
+        L.append("> 暂无行业估值对比数据")
+
+    # 行业景气度
+    sentiment = ctx.industry_comparison.get('行业景气度', {})
+    L.append("\n### 10.2 行业景气度\n")
+    L.append(f"- **涨跌幅**：{sentiment.get('涨跌幅', 0):.2f}%")
+    L.append(f"- **换手率**：{sentiment.get('换手率', 0):.2f}%")
+    L.append(f"- **资金流向**：{sentiment.get('资金流入', '未知')}")
+    L.append(f"- **景气度评估**：{sentiment.get('景气度', '中性')}")
+
+    # 龙头溢价
+    leader = ctx.industry_comparison.get('龙头溢价', {})
+    L.append("\n### 10.3 龙头溢价分析\n")
+    if leader.get('龙头公司'):
+        L.append(f"- **龙头公司**：{leader.get('龙头公司', '')}")
+        L.append(f"- **龙头 PE**：{leader.get('龙头PE', 0):.2f}")
+        L.append(f"- **行业平均 PE**：{leader.get('行业平均PE', 0):.2f}")
+        L.append(f"- **溢价率**：{leader.get('溢价率', 0):.2f}%")
+        L.append(f"- **溢价合理性**：{leader.get('溢价合理性', '数据不足')}")
+    else:
+        L.append("> 暂无龙头溢价数据")
+
+    return L
+
+
+def _section_counter_evidence(ctx):
+    """反证清单与跟踪因子"""
+    L = []
     L.append("\n---\n## 十一、反证清单与跟踪因子\n")
     L.append("以下事实出现时，应重新评估当前结论：\n")
 
     # 根据当前技术状态生成反证清单
-    if indicators.get("DIF", 0) > indicators.get("DEA", 0):
+    if ctx.indicators.get("DIF", 0) > ctx.indicators.get("DEA", 0):
         L.append("1. MACD 出现死叉（DIF 下穿 DEA）")
     else:
         L.append("1. MACD 出现金叉（DIF 上穿 DEA）")
 
-    ma20 = indicators.get("MA20", 0)
-    ma60 = indicators.get("MA60", 0)
-    if price > ma20:
+    ma20 = ctx.indicators.get("MA20", 0)
+    ma60 = ctx.indicators.get("MA60", 0)
+    if ctx.price > ma20:
         L.append(f"2. 股价跌破 20 日均线（当前 {ma20:.2f}）")
     else:
         L.append(f"2. 股价站上 20 日均线（当前 {ma20:.2f}）")
 
-    if price > ma60:
+    if ctx.price > ma60:
         L.append(f"3. 股价跌破 60 日均线（当前 {ma60:.2f}）")
     else:
         L.append(f"3. 股价站上 60 日均线（当前 {ma60:.2f}）")
 
-    if financial_health:
-        profit_growth = financial_health.get("净利润同比", 0)
+    if ctx.financial_health:
+        profit_growth = ctx.financial_health.get("净利润同比", 0)
         if profit_growth > 0:
             L.append(f"4. 下一季度净利润同比转负（当前 {profit_growth:.1f}%）")
         else:
@@ -1496,74 +1617,153 @@ def generate_report(code, name, df, indicators, fund_flow, north_flow, quote, ne
     L.append("\n**关键跟踪因子：**\n")
     L.append("| 因子 | 当前状态 | 信息源 | 更新频率 |")
     L.append("|------|----------|--------|----------|")
-    L.append(f"| 均线趋势 | {'多头' if price > ma20 else '空头'} | K线数据 | 每日 |")
-    L.append(f"| MACD信号 | {'金叉' if indicators.get('DIF',0) > indicators.get('DEA',0) else '死叉'} | K线数据 | 每日 |")
-    L.append(f"| 主力资金 | {'流入' if fund_flow and safe_num(fund_flow.get('今日',{}).get('f62',0)) > 0 else '流出'} | 资金流向 | 每日 |")
-    if financial_health:
-        L.append(f"| 净利润增速 | {financial_health.get('净利润同比', '-')} | 财报 | 季度 |")
-        L.append(f"| 资产负债率 | {financial_health.get('资产负债率', '-')} | 财报 | 季度 |")
+    L.append(f"| 均线趋势 | {'多头' if ctx.price > ma20 else '空头'} | K线数据 | 每日 |")
+    L.append(f"| MACD信号 | {'金叉' if ctx.indicators.get('DIF',0) > ctx.indicators.get('DEA',0) else '死叉'} | K线数据 | 每日 |")
+    L.append(f"| 主力资金 | {'流入' if ctx.fund_flow and safe_num(ctx.fund_flow.get('今日',{}).get('f62',0)) > 0 else '流出'} | 资金流向 | 每日 |")
+    if ctx.financial_health:
+        L.append(f"| 净利润增速 | {ctx.financial_health.get('净利润同比', '-')} | 财报 | 季度 |")
+        L.append(f"| 资产负债率 | {ctx.financial_health.get('资产负债率', '-')} | 财报 | 季度 |")
 
-    # ── 十二、加权信号评分 ──
-    if weighted_score:
-        L.append("\n---\n## 十二、加权信号评分\n")
-        L.append(f"**综合评分：{weighted_score['score']:.2f}**（-10 到 +10）\n")
-        L.append(f"**操作方向：{weighted_score['direction']}**")
-        L.append(f"**置信度：{weighted_score['confidence']}**\n")
+    return L
 
-        L.append("**信号明细：**")
-        for signal in weighted_score["signals"]:
-            L.append(f"- {signal}")
 
-        L.append(f"\n**多空统计：**")
-        L.append(f"- 看多信号：{weighted_score['bullish_signals']} 个")
-        L.append(f"- 看空信号：{weighted_score['bearish_signals']} 个")
-        L.append(f"- 净信号数：{weighted_score['net_signals']}")
+def _section_weighted_score(ctx):
+    """加权信号评分"""
+    L = []
+    if not ctx.weighted_score:
+        return L
 
-    # ── 十三、操作建议 ──
-    if stop_loss and target and position:
-        L.append("\n---\n## 十三、操作建议\n")
-        L.append(f"**方向：{weighted_score['direction']}**")
-        L.append(f"**仓位：{position['position_pct']}%**（{position['description']}）\n")
+    L.append("\n---\n## 十二、加权信号评分\n")
+    L.append(f"**综合评分：{ctx.weighted_score['score']:.2f}**（-10 到 +10）\n")
+    L.append(f"**操作方向：{ctx.weighted_score['direction']}**")
+    L.append(f"**置信度：{ctx.weighted_score['confidence']}**\n")
 
-        L.append("**止损/目标位：**")
-        L.append(f"- 止损价：{stop_loss['stop_loss']}（{stop_loss['description']}）")
-        L.append(f"- 目标价：{target['target_price']}（{target['description']}）")
-        L.append(f"- 风险收益比：1:{target['risk_reward_ratio']}")
+    L.append("**信号明细：**")
+    for signal in ctx.weighted_score["signals"]:
+        L.append(f"- {signal}")
 
-    # ── 十四、支撑压力位 ──
-    if support_resistance:
-        L.append("\n---\n## 十四、支撑压力位\n")
+    L.append(f"\n**多空统计：**")
+    L.append(f"- 看多信号：{ctx.weighted_score['bullish_signals']} 个")
+    L.append(f"- 看空信号：{ctx.weighted_score['bearish_signals']} 个")
+    L.append(f"- 净信号数：{ctx.weighted_score['net_signals']}")
 
-        if support_resistance.get("resistance"):
-            L.append("**压力位：**")
-            L.append("| 价格 | 来源 |")
-            L.append("|------|------|")
-            for r in support_resistance["resistance"][:5]:
-                L.append(f"| {r['price']} | {r['source']} |")
+    return L
 
-        if support_resistance.get("support"):
-            L.append("\n**支撑位：**")
-            L.append("| 价格 | 来源 |")
-            L.append("|------|------|")
-            for s in support_resistance["support"][:5]:
-                L.append(f"| {s['price']} | {s['source']} |")
 
-    # ── 十五、新闻情感分析 ──
-    if sentiment_result:
-        L.append("\n---\n## 十五、新闻情感分析\n")
-        L.append(summarize_sentiment(sentiment_result))
+def _section_trade_suggestion(ctx):
+    """操作建议"""
+    L = []
+    if not (ctx.stop_loss and ctx.target and ctx.position):
+        return L
 
-    # ── 十六、风控提示 ──
-    if risk_check and risk_check.get("warnings"):
-        L.append("\n---\n## 十六、风控提示\n")
-        for warning in risk_check["warnings"]:
-            L.append(f"- [!] {warning}")
+    L.append("\n---\n## 十三、操作建议\n")
+    L.append(f"**方向：{ctx.weighted_score['direction']}**")
+    L.append(f"**仓位：{ctx.position['position_pct']}%**（{ctx.position['description']}）\n")
 
-    # ── 风险提示 ──
+    L.append("**止损/目标位：**")
+    L.append(f"- 止损价：{ctx.stop_loss['stop_loss']}（{ctx.stop_loss['description']}）")
+    L.append(f"- 目标价：{ctx.target['target_price']}（{ctx.target['description']}）")
+    L.append(f"- 风险收益比：1:{ctx.target['risk_reward_ratio']}")
+
+    return L
+
+
+def _section_support_resistance(ctx):
+    """支撑压力位"""
+    L = []
+    if not ctx.support_resistance:
+        return L
+
+    L.append("\n---\n## 十四、支撑压力位\n")
+
+    if ctx.support_resistance.get("resistance"):
+        L.append("**压力位：**")
+        L.append("| 价格 | 来源 |")
+        L.append("|------|------|")
+        for r in ctx.support_resistance["resistance"][:5]:
+            L.append(f"| {r['price']} | {r['source']} |")
+
+    if ctx.support_resistance.get("support"):
+        L.append("\n**支撑位：**")
+        L.append("| 价格 | 来源 |")
+        L.append("|------|------|")
+        for s in ctx.support_resistance["support"][:5]:
+            L.append(f"| {s['price']} | {s['source']} |")
+
+    return L
+
+
+def _section_sentiment(ctx):
+    """新闻情感分析"""
+    L = []
+    if not ctx.sentiment_result:
+        return L
+
+    L.append("\n---\n## 十五、新闻情感分析\n")
+    L.append(summarize_sentiment(ctx.sentiment_result))
+
+    return L
+
+
+def _section_risk_control(ctx):
+    """风控提示"""
+    L = []
+    if not (ctx.risk_check and ctx.risk_check.get("warnings")):
+        return L
+
+    L.append("\n---\n## 十六、风控提示\n")
+    for warning in ctx.risk_check["warnings"]:
+        L.append(f"- [!] {warning}")
+
+    return L
+
+
+def _section_disclaimer(ctx):
+    """风险提示"""
+    L = []
     L.append("\n---\n## 风险提示\n")
     L.append("- 以上分析基于公开数据自动计算，请结合基本面和市场环境综合判断")
     L.append("- 技术指标存在滞后性，请结合自身风险承受能力做出投资决策")
     L.append("- 股市有风险，投资需谨慎")
+    return L
+
+
+def generate_report(code, name, df, indicators, fund_flow, north_flow, quote, news_df, industry_df,
+                    financial_health=None, rating=None, extended_indicators=None,
+                    valuation_percentile=None, industry_comparison=None,
+                    weighted_score=None, stop_loss=None, target=None,
+                    support_resistance=None, position=None, risk_check=None,
+                    sentiment_result=None, company_profile=None):
+    """生成单个综合分析报告"""
+    ctx = ReportContext(
+        code=code, name=name, df=df, indicators=indicators,
+        fund_flow=fund_flow, north_flow=north_flow, quote=quote,
+        news_df=news_df, industry_df=industry_df,
+        financial_health=financial_health or {}, rating=rating,
+        extended_indicators=extended_indicators,
+        valuation_percentile=valuation_percentile,
+        industry_comparison=industry_comparison,
+        weighted_score=weighted_score, stop_loss=stop_loss,
+        target=target, support_resistance=support_resistance,
+        position=position, risk_check=risk_check,
+        sentiment_result=sentiment_result,
+        company_profile=company_profile,
+        price=indicators.get("最新价", 0),
+        now=datetime.datetime.now().strftime('%Y-%m-%d %H:%M')
+    )
+
+    L = []
+    for section_fn in [
+        _section_title, _section_company_profile, _section_company_analysis,
+        _section_summary, _section_market_overview, _section_technical_analysis,
+        _section_fund_flow, _section_fundamentals, _section_financial_screen,
+        _section_news, _section_industry_board, _section_extended_indicators,
+        _section_valuation_percentile, _section_industry_comparison,
+        _section_counter_evidence, _section_weighted_score,
+        _section_trade_suggestion, _section_support_resistance,
+        _section_sentiment, _section_risk_control, _section_disclaimer
+    ]:
+        L.extend(section_fn(ctx))
 
     return "\n".join(L)
 
@@ -1575,10 +1775,6 @@ def generate_report(code, name, df, indicators, fund_flow, north_flow, quote, ne
 def analyze_stock(code, output_dir="."):
     # 分析间冷却保护：连续调用时强制间隔
     global _last_analysis_time
-    try:
-        _last_analysis_time
-    except NameError:
-        _last_analysis_time = 0
     elapsed_since_last = time.time() - _last_analysis_time
     if elapsed_since_last < 15:
         wait = 15 - elapsed_since_last
@@ -1615,41 +1811,41 @@ def analyze_stock(code, output_dir="."):
     print(f"  [限制] 每分钟 ≤12 次，会话上限 60 次，超过自动冷却")
     print()
 
-    print("[1/12] 获取 K 线数据...")
+    print("[1/13] 获取 K 线数据...")
     df_hist = fetch_kline(code, days=500)
     print(f"  获取到 {len(df_hist)} 条 K 线数据")
 
-    print("[2/12] 获取实时行情... [复用已有数据，无额外请求]")
+    print("[2/13] 获取实时行情... [复用已有数据，无额外请求]")
 
     if us_mode:
         # 美股：跳过东方财富专属数据
-        print("[3/12] 资金流向... [N/A 美股不适用]")
+        print("[3/13] 资金流向... [N/A 美股不适用]")
         fund_flow = {}
 
-        print("[4/12] 北向资金... [N/A 美股不适用]")
+        print("[4/13] 北向资金... [N/A 美股不适用]")
         north_flow = {}
 
-        print("[5/12] 新闻和行业数据... [N/A 美股不适用]")
+        print("[5/13] 新闻和行业数据... [N/A 美股不适用]")
         news_df = pd.DataFrame()
         industry_df = pd.DataFrame()
 
-        print("[6/12] 财务报表... [使用东方财富行情数据]")
+        print("[6/13] 财务报表... [使用东方财富行情数据]")
         financial_data = {}
     else:
-        print("[3/12] 获取资金流向...")
+        print("[3/13] 获取资金流向...")
         fund_flow = fetch_fund_flow(code)
 
-        print("[4/12] 获取北向资金...")
+        print("[4/13] 获取北向资金...")
         north_flow = fetch_north_flow()
 
-        print("[5/12] 获取新闻和行业数据...")
+        print("[5/13] 获取新闻和行业数据...")
         news_df = fetch_stock_news(code)
         industry_df = fetch_industry_boards()
 
-        print("[6/12] 获取财务报表数据...")
+        print("[6/13] 获取财务报表数据...")
         financial_data = fetch_financial_report(code)
 
-    print("[7/12] 获取公司概况...")
+    print("[7/13] 获取公司概况...")
     company_profile = fetch_company_profile(code)
 
     print("[8/13] 计算技术指标...")
@@ -1747,26 +1943,28 @@ def analyze_stock(code, output_dir="."):
 # 加权信号评分系统
 # ============================================================
 
-# 加权信号评分权重
+# 加权信号评分权重（总分归一化到 -10 ~ +10）
+# 权重设计原则：趋势信号权重最高（2.0），因为趋势是核心驱动力；
+# MACD/RSI 等动量信号次之（1.0~1.5），量价关系权重最低（0.5~1.0）
 SIGNAL_WEIGHTS = {
-    "ma_alignment_bull": 2.0,     # 均线多头排列
-    "ma_alignment_bear": -2.0,    # 均线空头排列
-    "macd_golden_cross": 1.5,     # MACD 金叉
-    "macd_death_cross": -1.5,     # MACD 死叉
-    "macd_hist_positive": 0.5,    # MACD 红柱
-    "macd_hist_negative": -0.5,   # MACD 绿柱
-    "rsi_oversold": 1.0,          # RSI 超卖
-    "rsi_overbought": -1.0,       # RSI 超买
-    "rsi_extreme_overbought": -2.0,  # RSI 严重超买
-    "rsi_extreme_oversold": 1.5,  # RSI 严重超卖
-    "boll_lower": 1.0,            # 触及布林下轨
-    "boll_upper": -1.0,           # 触及布林上轨
-    "bias_alert": -1.0,           # 乖离率预警
-    "volume_up": 1.0,             # 放量上涨
-    "volume_down_weak": -0.5,     # 缩量上涨
-    "volume_down_panic": -1.5,    # 放量下跌
-    "obv_inflow": 0.5,            # OBV 资金流入
-    "obv_outflow": -0.5,          # OBV 资金流出
+    "ma_alignment_bull": 2.0,     # 均线多头排列 — 最强趋势信号，权重最高
+    "ma_alignment_bear": -2.0,    # 均线空头排列 — 最强看空信号
+    "macd_golden_cross": 1.5,     # MACD 金叉 — 趋势转折确认信号
+    "macd_death_cross": -1.5,     # MACD 死叉 — 趋势转折确认信号
+    "macd_hist_positive": 0.5,    # MACD 红柱 — 多头动能辅助确认
+    "macd_hist_negative": -0.5,   # MACD 绿柱 — 空头动能辅助确认
+    "rsi_oversold": 1.0,          # RSI 超卖（<30）— 超卖反弹机会
+    "rsi_overbought": -1.0,       # RSI 超买（>70）— 超买回调风险
+    "rsi_extreme_overbought": -2.0,  # RSI 严重超买（>80）— 高度危险信号，加重权重
+    "rsi_extreme_oversold": 1.5,  # RSI 严重超卖（<20）— 强反弹信号，加重权重
+    "boll_lower": 1.0,            # 触及布林下轨 — 短期超卖支撑
+    "boll_upper": -1.0,           # 触及布林上轨 — 短期超买压力
+    "bias_alert": -1.0,           # 乖离率预警（>5%）— 均值回归风险
+    "volume_up": 1.0,             # 放量上涨 — 量价配合看多
+    "volume_down_weak": -0.5,     # 缩量上涨 — 上涨动能不足
+    "volume_down_panic": -1.5,    # 放量下跌 — 恐慌性抛售信号
+    "obv_inflow": 0.5,            # OBV 资金流入 — 资金面辅助确认
+    "obv_outflow": -0.5,          # OBV 资金流出 — 资金面辅助确认
 }
 
 

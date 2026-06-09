@@ -96,7 +96,7 @@ class TestGetMarketInfo:
         market_code, market_id, divisor = get_market_info('AAPL')
         assert market_code == 'US'
         assert market_id == 105
-        assert divisor == 1000
+        assert divisor == 1
 
     def test_invalid_code_empty(self):
         """测试空字符串"""

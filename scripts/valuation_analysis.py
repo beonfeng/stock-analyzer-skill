@@ -67,7 +67,7 @@ def calculate_percentile(current_value, historical_values):
 
     # 计算百分位：小于当前值的比例 × 100
     count_below = np.sum(arr < cv)
-    count_equal = np.sum(arr == cv)
+    count_equal = np.sum(np.abs(arr - cv) < 1e-6)
     n = len(arr)
 
     # 线性插值：将等于当前值的部分按比例分配
@@ -141,37 +141,8 @@ def fetch_historical_valuation(code, years=5):
 
     result = {'PE': [], 'PB': [], '股息率': []}
 
-    try:
-        market_code, market_id, _ = get_market_info(code)
-    except ValueError:
-        return result
-
-    # 计算日期范围
-    end = datetime.date.today().strftime("%Y%m%d")
-    start = (datetime.date.today() - datetime.timedelta(days=years * 365)).strftime("%Y%m%d")
-
-    # 尝试获取包含估值字段的 K 线数据
-    # fields2 中 f116=总市值, f117=流通市值（但 PE/PB 不在标准 K 线字段中）
-    params = {
-        "fields1": "f1,f2,f3,f4,f5,f6",
-        "fields2": "f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61,f116",
-        "ut": "7eea3edcaed734bea9cbfc24409ed989",
-        "klt": "101",  # 日线
-        "fqt": "1",    # 前复权
-        "secid": get_secid(code, market_id),
-        "beg": start, "end": end,
-    }
-
-    j = _http_get_safe("push2his.eastmoney.com", "/api/qt/stock/kline/get", params)
-    if not j or not j.get("data"):
-        return result
-
-    klines = j["data"].get("klines", [])
-    if not klines:
-        return result
-
-    # 由于 API 限制，K 线数据不直接包含 PE/PB 历史序列
-    # 返回空的估值列表，调用方应使用当前快照数据进行有限分析
+    # API 不返回 PE/PB 历史序列，使用经验阈值判断
+    # 保留函数签名以兼容调用方，直接返回空结果
     return result
 
 
@@ -253,7 +224,8 @@ def _estimate_zone_from_value(metric_name, value):
     当无法获取历史分位数时，基于绝对值进行经验判断。
 
     这是一个简化的估算方法，仅在无法获取历史数据时使用。
-    不同行业的合理估值差异很大，此方法仅提供粗略参考。
+    不同行业的合理估值差异很大（如银行 PE 通常 5-8，科技 PE 可达 40+），
+    此方法仅提供粗略参考，不区分行业特性。
 
     Args:
         metric_name: 指标名称（'PE'/'PB'/'股息率'）
@@ -275,20 +247,20 @@ def _estimate_zone_from_value(metric_name, value):
         else:
             return "高股息（经验判断）"
 
-    if value == 0:
+    if abs(value) < 1e-6:
         return "数据缺失"
 
     if metric_name == "PE":
         if value < 0:
             return "亏损"
         elif value < 15:
-            return "低估（经验判断）"
+            return "低估（全市场经验判断，需结合行业特性）"
         elif value < 25:
-            return "合理（经验判断）"
+            return "合理（全市场经验判断，需结合行业特性）"
         elif value < 40:
-            return "合理偏高（经验判断）"
+            return "合理偏高（全市场经验判断，需结合行业特性）"
         else:
-            return "高估（经验判断）"
+            return "高估（全市场经验判断，需结合行业特性）"
     elif metric_name == "PB":
         if value < 0:
             return "净资产为负"

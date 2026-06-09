@@ -15,6 +15,12 @@
 import numpy as np
 import pandas as pd
 
+# K 线形态阈值常量
+DOJI_BODY_RATIO = 0.1      # 十字星：实体/影线比例阈值
+HAMMER_SHADOW_RATIO = 2     # 锤子线：下影线/实体比例
+HAMMER_BODY_RATIO = 0.1     # 锤子线：实体/最高最低比例
+ENGULFING_RATIO = 0.5       # 吞没形态：实体覆盖比例
+
 
 def detect_rsi_divergence(close, rsi, lookback=20):
     """
@@ -141,8 +147,11 @@ def analyze_macd_histogram(dif_series, dea_series):
     if len(recent) >= 2:
         x = np.arange(len(recent), dtype=float)
         y = recent.values.astype(float)
-        # 最小二乘法线性拟合
-        slope = np.polyfit(x, y, 1)[0]
+        if np.any(np.isnan(y)):
+            slope = 0.0
+        else:
+            # 最小二乘法线性拟合
+            slope = np.polyfit(x, y, 1)[0]
     else:
         slope = 0.0
 
@@ -266,7 +275,7 @@ def identify_candlestick_patterns(df, lookback=5):
         total_range = h - l if h != l else 0.001  # 避免除零
 
         # 十字星：实体很小，上下影线较长
-        if body < total_range * 0.1 and upper_shadow > body and lower_shadow > body:
+        if body < total_range * DOJI_BODY_RATIO and upper_shadow > body and lower_shadow > body:
             patterns.append({
                 '形态': '十字星',
                 '信号': '多空博弈激烈，可能变盘',
@@ -274,15 +283,15 @@ def identify_candlestick_patterns(df, lookback=5):
             })
 
         # 锤子线：下影线 > 实体 2 倍，上影线很短
-        if body > 0 and lower_shadow > body * 2 and upper_shadow <= body * 0.5 + eps:
+        if body > 0 and lower_shadow > body * HAMMER_SHADOW_RATIO and upper_shadow <= body * ENGULFING_RATIO + eps:
             patterns.append({
                 '形态': '锤子线',
                 '信号': '下影线长，下方支撑强，可能反弹',
                 '可靠性': '中',
             })
 
-        # 倒锤子线：上影线 > 实体 2 倍，下影线很短
-        if body > 0 and upper_shadow > body * 2 and lower_shadow <= body * 0.5 + eps:
+        # 倒锤子线：上影线 > 实体 2 倍，下影线很短（与锤子线互斥）
+        elif body > 0 and upper_shadow > body * HAMMER_SHADOW_RATIO and lower_shadow <= body * ENGULFING_RATIO + eps:
             patterns.append({
                 '形态': '倒锤子线',
                 '信号': '上影线长，上方压力大，但有反弹意愿',
@@ -307,8 +316,8 @@ def identify_candlestick_patterns(df, lookback=5):
                     '可靠性': '高',
                 })
 
-            # 看跌吞没：前阳后阴，当日实体完全包含前一日实体
-            if (prev_c > prev_o and c < o and
+            # 看跌吞没：前阳后阴，当日实体完全包含前一日实体（与看涨吞没互斥）
+            elif (prev_c > prev_o and c < o and
                     curr_body_top > prev_body_top and curr_body_bottom < prev_body_bottom):
                 patterns.append({
                     '形态': '看跌吞没',
@@ -317,7 +326,7 @@ def identify_candlestick_patterns(df, lookback=5):
                 })
 
             # 乌云盖顶：阳线后出现高开低走阴线，阴线收盘价低于阳线实体中部
-            if (prev_c > prev_o and c < o and
+            elif (prev_c > prev_o and c < o and
                     o > prev_body_top and c < (prev_o + prev_c) / 2):
                 patterns.append({
                     '形态': '乌云盖顶',
@@ -408,6 +417,8 @@ def calculate_extended_indicators(df, indicators):
     volume = df['成交量'].astype(float)
 
     # 1. RSI 背离检测
+    # 注意：此处重新计算 RSI 序列用于背离检测（需要完整序列而非单值），
+    # 使用与 analyzer.py 相同的 Wilder 平滑算法（rolling mean）
     delta = close.diff()
     gain = delta.where(delta > 0, 0).rolling(6).mean()
     loss = (-delta.where(delta < 0, 0)).rolling(6).mean()
@@ -424,8 +435,8 @@ def calculate_extended_indicators(df, indicators):
     result['MACD柱状图'] = analyze_macd_histogram(dif, dea)
 
     # 3. 成交量异动检测
-    ma5_vol = volume.rolling(5).mean().iloc[-1] if len(volume) >= 5 else volume.mean()
-    ma20_vol = volume.rolling(20).mean().iloc[-1] if len(volume) >= 20 else volume.mean()
+    ma5_vol = volume.rolling(5).mean().fillna(volume.mean()).iloc[-1] if len(volume) >= 5 else volume.mean()
+    ma20_vol = volume.rolling(20).mean().fillna(volume.mean()).iloc[-1] if len(volume) >= 20 else volume.mean()
     result['成交量异动'] = detect_volume_anomaly(
         volume=volume.iloc[-1],
         ma5=ma5_vol,

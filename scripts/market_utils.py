@@ -7,13 +7,15 @@
 - 港股 (HK)：5 位数字代码，如 00700、09988
 - 上海 A 股 (SH)：6 开头的 6 位代码，如 600519
 - 深圳 A 股 (SZ)：0 或 3 开头的 6 位代码，如 000001、300750
+- 北交所 (BJ)：8 开头的 6 位代码，如 830799
 - 美股 (US)：包含字母的代码，如 AAPL、TSLA、BRK.B
 
 东方财富 API 市场 ID：
 - 港股：116
 - 上海：1
 - 深圳：0
-- 美股：不适用（使用 yfinance）
+- 北交所：0
+- 美股：105（yfinance 获取数据）
 """
 
 import re
@@ -28,8 +30,8 @@ def get_market_info(code):
 
     Returns:
         tuple: (market_code, market_id, price_divisor)
-            - market_code: 市场代码，'HK'/'SH'/'SZ'/'US'
-            - market_id: 东方财富 API 市场 ID，116/1/0/None
+            - market_code: 市场代码，'HK'/'SH'/'SZ'/'BJ'/'US'
+            - market_id: 东方财富 API 市场 ID，116/1/0/105
             - price_divisor: 价格除数，1000/100/1
 
     Raises:
@@ -43,13 +45,13 @@ def get_market_info(code):
         >>> get_market_info('000001')
         ('SZ', 0, 100)
         >>> get_market_info('AAPL')
-        ('US', None, 1)
+        ('US', 105, 1)
     """
     code = str(code).strip()
 
-    # 美股：包含字母的代码（如 AAPL、TSLA、BRK.B）
+    # 判断优先级：美股（含字母）→ 港股（5位纯数字）→ A股/北交所（6位纯数字）
     if re.search(r'[A-Za-z]', code):
-        return ('US', 105, 1000)
+        return ('US', 105, 1)
 
     # 港股：5 位数字
     if len(code) == 5 and code.isdigit():
@@ -63,6 +65,9 @@ def get_market_info(code):
         # 深交所：0xxxxx（A 股）、3xxxxx（创业板）、1xxxxx（ETF/LOF）
         elif code[0] in '031':
             return ('SZ', 0, 100)
+        # 北交所：8xxxxx（如 830799）
+        elif code[0] == '8':
+            return ('BJ', 0, 100)
 
     raise ValueError(f"无法识别的股票代码格式: {code}")
 
@@ -73,13 +78,13 @@ def convert_price(raw_price, market):
 
     Args:
         raw_price: 原始价格值（可能是数字、字符串、None 或 '-'）
-        market: 市场代码，'HK'/'SH'/'SZ'/'US'
+        market: 市场代码，'HK'/'SH'/'SZ'/'BJ'/'US'
 
     Returns:
         float: 转换后的价格（浮点数），异常值返回 0.0 而非抛异常
 
     Raises:
-        ValueError: 无效的市场类型（非 HK/SH/SZ）
+        ValueError: 无效的市场类型（非 HK/SH/SZ/BJ/US）
 
     Examples:
         >>> convert_price(458200, 'HK')
@@ -98,11 +103,12 @@ def convert_price(raw_price, market):
     except (ValueError, TypeError):
         return 0.0
 
-    # 根据市场类型除以对应除数
-    divisors = {'HK': 1000, 'SH': 100, 'SZ': 100, 'US': 1000}
-    if market not in divisors:
+    # 根据市场类型除以对应除数（复用 get_market_info 的逻辑）
+    # HK=1000（港币厘）, SH/SZ/BJ=100（分）, US=1（美元）
+    divisor_map = {'HK': 1000, 'SH': 100, 'SZ': 100, 'BJ': 100, 'US': 1}
+    if market not in divisor_map:
         raise ValueError(f"无效的市场类型: {market}")
-    return price / divisors[market]
+    return price / divisor_map[market]
 
 
 def is_hk_stock(code):

@@ -8,6 +8,8 @@
 """
 
 import datetime
+import html
+import re
 
 try:
     import markdown
@@ -173,6 +175,9 @@ def md_to_html(md_content: str, title: str = "分析报告") -> str:
     Returns:
         完整的 HTML 字符串
     """
+    if not md_content:
+        return ""
+
     if not HAS_MARKDOWN:
         # 简单降级：手动处理基本格式
         html_body = _simple_md_to_html(md_content)
@@ -187,12 +192,13 @@ def md_to_html(md_content: str, title: str = "分析报告") -> str:
         )
 
     now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
-    html = f"""<!DOCTYPE html>
+    safe_title = html.escape(title)
+    result = f"""<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>{title}</title>
+    <title>{safe_title}</title>
     {_REPORT_CSS}
 </head>
 <body>
@@ -202,7 +208,7 @@ def md_to_html(md_content: str, title: str = "分析报告") -> str:
     {html_body}
 </body>
 </html>"""
-    return html
+    return result
 
 
 def md_to_pdf(md_content: str, output_path: str, title: str = "分析报告") -> str:
@@ -221,22 +227,22 @@ def md_to_pdf(md_content: str, output_path: str, title: str = "分析报告") ->
     """
     html_content = md_to_html(md_content, title)
 
+    def _fallback_to_html(content, pdf_path, report_title):
+        """降级为 HTML 输出"""
+        print("  [警告] weasyprint 不可用，已降级为 HTML 输出")
+        html_path = pdf_path.rsplit(".", 1)[0] + ".html"
+        with open(html_path, "w", encoding="utf-8") as f:
+            f.write(content)
+        return html_path
+
     if HAS_WEASYPRINT:
         try:
             weasyprint.HTML(string=html_content).write_pdf(output_path)
             return output_path
-        except Exception as e:
-            # weasyprint 渲染失败，降级为 HTML
-            html_path = output_path.rsplit(".", 1)[0] + ".html"
-            with open(html_path, "w", encoding="utf-8") as f:
-                f.write(html_content)
-            return html_path
+        except Exception:
+            return _fallback_to_html(html_content, output_path, title)
 
-    # weasyprint 不可用，降级为 HTML
-    html_path = output_path.rsplit(".", 1)[0] + ".html"
-    with open(html_path, "w", encoding="utf-8") as f:
-        f.write(html_content)
-    return html_path
+    return _fallback_to_html(html_content, output_path, title)
 
 
 def _simple_md_to_html(md_content: str) -> str:
@@ -244,7 +250,6 @@ def _simple_md_to_html(md_content: str) -> str:
     简单的 Markdown → HTML 转换（不依赖 markdown 库）。
     处理基本的标题、表格、粗体、引用块。
     """
-    import re
     lines = md_content.split("\n")
     html_lines = []
     in_table = False
@@ -326,7 +331,6 @@ def _simple_md_to_html(md_content: str) -> str:
 
 def _inline_format(text: str) -> str:
     """处理行内格式：粗体、行内代码"""
-    import re
     # 粗体
     text = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", text)
     # 行内代码
