@@ -78,6 +78,10 @@ def compare_two_stocks(
         "winner": mv_winner,
         "note": "越大越稳",
     })
+    if mv_winner == "a":
+        score_a += 1
+    elif mv_winner == "b":
+        score_b += 1
 
     # 4. 涨跌幅对比
     chg_a = stock_a.get("change_pct", 0)
@@ -90,6 +94,10 @@ def compare_two_stocks(
         "winner": chg_winner,
         "note": "",
     })
+    if chg_winner == "a":
+        score_a += 1
+    elif chg_winner == "b":
+        score_b += 1
 
     # 5. RSI 对比
     rsi_a = stock_a.get("indicators", {}).get("RSI6", 50)

@@ -13,7 +13,7 @@ from typing import Dict, Any
 import pandas as pd
 import numpy as np
 
-from .market_utils import get_market_info, convert_price, is_hk_stock, is_us_stock, get_secid
+from .market_utils import get_market_info, convert_price, is_us_stock, get_secid
 from .utils import _http_get, _http_get_safe, safe_num, is_trading_day, print_request_stats, reset_request_stats
 from .technical_indicators import calculate_extended_indicators
 from .valuation_analysis import analyze_valuation_percentile
@@ -24,7 +24,7 @@ from .risk_control import (
     calc_support_resistance, calc_position_size,
     check_risk_rules, detect_board_type
 )
-from .comparison import compare_two_stocks, generate_comparison_table, get_sector_stocks, analyze_sector
+from .comparison import compare_two_stocks, get_sector_stocks, analyze_sector
 
 
 # ============================================================
@@ -66,16 +66,16 @@ def fetch_kline(code, days=500):
         if len(parts) >= 11:
             rows.append({
                 "日期": parts[0],
-                "开盘": float(parts[1]),
-                "收盘": float(parts[2]),
-                "最高": float(parts[3]),
-                "最低": float(parts[4]),
-                "成交量": float(parts[5]),
-                "成交额": float(parts[6]),
-                "振幅": float(parts[7]),
-                "涨跌幅": float(parts[8]),
-                "涨跌额": float(parts[9]),
-                "换手率": float(parts[10]),
+                "开盘": safe_num(parts[1], 0.0),
+                "收盘": safe_num(parts[2], 0.0),
+                "最高": safe_num(parts[3], 0.0),
+                "最低": safe_num(parts[4], 0.0),
+                "成交量": safe_num(parts[5], 0.0),
+                "成交额": safe_num(parts[6], 0.0),
+                "振幅": safe_num(parts[7], 0.0),
+                "涨跌幅": safe_num(parts[8], 0.0),
+                "涨跌额": safe_num(parts[9], 0.0),
+                "换手率": safe_num(parts[10], 0.0),
             })
     return pd.DataFrame(rows)
 
@@ -88,7 +88,7 @@ def fetch_realtime_quote(code):
     params2 = {
         "secid": get_secid(code, market_id),
         "ut": "fa5fd1943c7b386f172d6893dbfba10b",
-        "fields": "f43,f44,f45,f46,f47,f48,f50,f51,f52,f55,f57,f58,f60,f62,f71,f92,f105,f116,f117,f162,f167,f168,f169,f170,f171,f173,f177,f183,f184,f185,f186,f187,f188,f189,f190,f191,f192,f193",
+        "fields": "f43,f44,f45,f46,f47,f48,f50,f51,f52,f55,f57,f58,f60,f62,f71,f92,f105,f115,f116,f117,f162,f167,f168,f169,f170,f171,f173,f177,f183,f184,f185,f186,f187,f188,f189,f190,f191,f192,f193",
         "invt": "2",
     }
     j2 = _http_get_safe("push2.eastmoney.com", "/api/qt/stock/get", params2)
@@ -136,6 +136,7 @@ def fetch_realtime_quote(code):
             "f40": direct("f183"),  # 营收（元）
             "f41": direct("f185"),  # 净利润同比（已经是百分比）
             "f34": direct("f188"),  # 资产负债率（已经是百分比）
+            "f115": direct("f115"),  # 每股收益
             "market": market_code,  # 市场类型
         }
     # 方法2（备选）：从列表中遍历查找 — O(n) 性能较差，仅 A 股可用
@@ -237,7 +238,7 @@ def fetch_stock_news(code):
             for item in data[:10]:
                 title = item.get("title", "") or item.get("infoCode", "")
                 org = item.get("orgSName", "") or item.get("orgName", "")
-                pub_date = item.get("publishDate", "")[:10]
+                pub_date = (item.get("publishDate") or "")[:10]
                 if title:
                     rows.append({
                         "新闻标题": f"[研报] {title}",
@@ -261,7 +262,7 @@ def fetch_stock_news(code):
         data = j.get("data", {}).get("list", []) if isinstance(j, dict) else []
         for item in data[:10]:
             title = item.get("title", "") or item.get("noticeTitle", "")
-            pub_date = item.get("noticeDate", "")[:10]
+            pub_date = (item.get("noticeDate") or "")[:10]
             if title:
                 rows.append({
                     "新闻标题": f"[公告] {title}",
@@ -285,7 +286,7 @@ def fetch_industry_boards():
         "ut": "bd1d9ddb04089700cf9c27f6f7426281",
         "fltt": "2", "invt": "2", "fid": "f3",
         "fs": "m:90+t:2+f:!50",
-        "fields": "f1,f2,f3,f4,f5,f6,f7,f8,f9,f10,f12,f13,f14,f15,f16,f17,f18,f20,f21,f23,f24,f25,f22,f33,f11,f62,f128,f136,f115,f152",
+        "fields": "f1,f2,f3,f4,f5,f6,f7,f8,f9,f10,f12,f13,f14,f15,f16,f17,f18,f20,f21,f23,f24,f25,f22,f33,f11,f62,f128,f136,f104,f105,f115,f152",
     }
     j = _http_get_safe("push2.eastmoney.com", "/api/qt/clist/get", params)
     items = j.get("data", {}).get("diff", []) if j else []
@@ -304,6 +305,8 @@ def fetch_industry_boards():
 
 def fetch_financial_report(code):
     """获取财务报表数据（现金流、资产负债表关键指标）"""
+    if not code.isalnum():
+        return []
     try:
         market_code, _, _ = get_market_info(code)
         # 港股财务报表接口不同，暂不支持
@@ -348,6 +351,9 @@ def fetch_company_profile(code):
         '股东结构': [],
     }
 
+    if not code.isalnum():
+        return result
+
     try:
         market_code, _, _ = get_market_info(code)
         # 港股接口不同，暂不支持
@@ -356,7 +362,8 @@ def fetch_company_profile(code):
     except ValueError:
         return result
 
-    secucode = f"{code}.{'SH' if market_code == 'SH' else 'SZ'}"
+    _market_suffix = {'SH': 'SH', 'SZ': 'SZ', 'BJ': 'BJ'}.get(market_code, 'SZ')
+    secucode = f"{code}.{_market_suffix}"
 
     # 1. 获取公司基本资料
     try:
@@ -450,7 +457,10 @@ def fetch_company_profile(code):
                     date = it.get('END_DATE', '')[:10]
                     by_date3[date].append(it)
                 # API 返回 ISO 格式日期，字符串比较等价于日期比较
-                latest3 = max(by_date3.keys())
+                valid_keys = [k for k in by_date3.keys() if k]
+                if not valid_keys:
+                    raise ValueError("无有效日期")
+                latest3 = max(valid_keys)
                 for it in sorted(by_date3[latest3], key=lambda x: x.get('HOLD_NUM', 0), reverse=True)[:10]:
                     result['股东结构'].append({
                         '名称': it.get('HOLDER_NAME', ''),
@@ -602,7 +612,7 @@ def get_stock_name(code, return_quote=False):
         name = _STOCK_NAMES.get(code, code)
 
     if return_quote:
-        return name, quote if quote else {"market": ""}
+        return name, (quote if quote else {"market": ""})
     return name
 
 
@@ -683,13 +693,13 @@ def calculate_indicators(df):
 
     # 涨跌幅统计
     indicators["最新价"] = close.iloc[-1]
-    indicators["涨跌幅_今日"] = ((close.iloc[-1] / close.iloc[-2]) - 1) * 100 if len(close) >= 2 else 0
+    indicators["涨跌幅_今日"] = ((close.iloc[-1] / close.iloc[-2]) - 1) * 100 if len(close) >= 2 and close.iloc[-2] != 0 else 0
     if len(close) >= 5:
-        indicators["涨跌幅_5日"] = ((close.iloc[-1] / close.iloc[-5]) - 1) * 100
+        indicators["涨跌幅_5日"] = ((close.iloc[-1] / close.iloc[-5]) - 1) * 100 if close.iloc[-5] != 0 else 0
     if len(close) >= 20:
-        indicators["涨跌幅_20日"] = ((close.iloc[-1] / close.iloc[-20]) - 1) * 100
+        indicators["涨跌幅_20日"] = ((close.iloc[-1] / close.iloc[-20]) - 1) * 100 if close.iloc[-20] != 0 else 0
     if len(close) >= 60:
-        indicators["涨跌幅_60日"] = ((close.iloc[-1] / close.iloc[-60]) - 1) * 100
+        indicators["涨跌幅_60日"] = ((close.iloc[-1] / close.iloc[-60]) - 1) * 100 if close.iloc[-60] != 0 else 0
     indicators["最高价_60日"] = high.tail(60).max() if len(high) >= 60 else high.max()
     indicators["最低价_60日"] = low.tail(60).min() if len(low) >= 60 else low.min()
 
@@ -846,6 +856,9 @@ class ReportContext:
                  'position', 'risk_check', 'sentiment_result', 'company_profile',
                  'price', 'now']
     def __init__(self, **kwargs):
+        for k in self.__slots__:
+            if k not in kwargs:
+                setattr(self, k, None)
         for k, v in kwargs.items():
             setattr(self, k, v)
 
@@ -855,7 +868,10 @@ def _section_title(ctx):
     L = []
     L.append(f"# {ctx.name}（{ctx.code}）股票分析报告")
     L.append(f"\n> 生成时间：{ctx.now}")
-    L.append(f"> 数据区间：{ctx.df['日期'].iloc[0]} ~ {ctx.df['日期'].iloc[-1]}，共 {len(ctx.df)} 个交易日\n")
+    if ctx.df.empty:
+        L.append("> 数据区间：暂无数据\n")
+    else:
+        L.append(f"> 数据区间：{ctx.df['日期'].iloc[0]} ~ {ctx.df['日期'].iloc[-1]}，共 {len(ctx.df)} 个交易日\n")
     return L
 
 
@@ -988,7 +1004,7 @@ def _section_company_analysis(ctx):
 
     # 1. 股权集中风险
     if holders:
-        top1 = holders[0].get('占流通股比', 0)
+        top1 = holders[0].get('占流通股比', 0) or 0
         if top1 > 40:
             risks.append(f"**股权高度集中**：第一大股东持股 {top1:.1f}%，公司治理和决策依赖少数人，存在治理风险")
 
@@ -1000,7 +1016,7 @@ def _section_company_analysis(ctx):
 
     # 3. 估值风险
     pe = safe_num(ctx.quote.get('f9', 0)) if ctx.quote else 0
-    if pe > 80:
+    if pe > 0 and pe > 80:
         risks.append(f"**估值偏高**：当前 PE {pe:.1f}，估值透支未来增长，面临估值压缩风险")
 
     # 4. 涨幅风险
@@ -1125,6 +1141,9 @@ def _section_market_overview(ctx):
     """行情概览"""
     L = []
     L.append("\n---\n## 一、行情概览\n")
+    if ctx.df.empty:
+        L.append("> 暂无行情数据\n")
+        return L
     last = ctx.df.iloc[-1]
     L.append("| 指标 | 数值 | 说明 |")
     L.append("|------|------|------|")
@@ -1691,7 +1710,7 @@ def _section_weighted_score(ctx):
 def _section_trade_suggestion(ctx):
     """操作建议"""
     L = []
-    if not (ctx.stop_loss and ctx.target and ctx.position):
+    if not (ctx.stop_loss and ctx.target and ctx.position and ctx.weighted_score):
         return L
 
     L.append("\n---\n## 十三、操作建议\n")
@@ -1777,7 +1796,7 @@ def generate_report(code, name, df, indicators, fund_flow, north_flow, quote, ne
         code=code, name=name, df=df, indicators=indicators,
         fund_flow=fund_flow, north_flow=north_flow, quote=quote,
         news_df=news_df, industry_df=industry_df,
-        financial_health=financial_health or {}, rating=rating,
+        financial_health=financial_health, rating=rating,
         extended_indicators=extended_indicators,
         valuation_percentile=valuation_percentile,
         industry_comparison=industry_comparison,
@@ -1851,6 +1870,8 @@ def analyze_stock(code, output_dir="."):
 
     print("[1/13] 获取 K 线数据...")
     df_hist = fetch_kline(code, days=500)
+    if df_hist.empty:
+        raise ValueError(f"无法获取 {code} 的 K 线数据，请检查股票代码是否正确或稍后重试")
     print(f"  获取到 {len(df_hist)} 条 K 线数据")
 
     print("[2/13] 获取实时行情... [复用已有数据，无额外请求]")
@@ -2198,8 +2219,8 @@ def compare_stocks_wrapper(code_a: str, code_b: str) -> Dict[str, Any]:
         "code": code_a,
         "name": name_a,
         "price": indicators_a.get("最新价", 0),
-        "pe": quote_a.get("f9", 0) if quote_a else 0,
-        "pb": quote_a.get("f23", 0) if quote_a else 0,
+        "pe": safe_num(quote_a.get("f9", 0)) if quote_a else 0,
+        "pb": safe_num(quote_a.get("f23", 0)) if quote_a else 0,
         "market_cap": safe_num(quote_a.get("f20", 0)) if quote_a else 0,
         "change_pct": indicators_a.get("涨跌幅_今日", 0),
         "indicators": indicators_a,
@@ -2216,8 +2237,8 @@ def compare_stocks_wrapper(code_a: str, code_b: str) -> Dict[str, Any]:
         "code": code_b,
         "name": name_b,
         "price": indicators_b.get("最新价", 0),
-        "pe": quote_b.get("f9", 0) if quote_b else 0,
-        "pb": quote_b.get("f23", 0) if quote_b else 0,
+        "pe": safe_num(quote_b.get("f9", 0)) if quote_b else 0,
+        "pb": safe_num(quote_b.get("f23", 0)) if quote_b else 0,
         "market_cap": safe_num(quote_b.get("f20", 0)) if quote_b else 0,
         "change_pct": indicators_b.get("涨跌幅_今日", 0),
         "indicators": indicators_b,

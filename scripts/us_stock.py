@@ -96,7 +96,7 @@ def fetch_us_realtime_quote(ticker: str) -> dict:
     stock = yf.Ticker(ticker)
     info = stock.info
 
-    if not info or "regularMarketPrice" not in info and "currentPrice" not in info:
+    if not info or ("regularMarketPrice" not in info and "currentPrice" not in info):
         # 尝试用 fast_info 获取
         try:
             fast = stock.fast_info
@@ -109,19 +109,19 @@ def fetch_us_realtime_quote(ticker: str) -> dict:
         market_cap = info.get("marketCap", 0)
 
     # 映射为东方财富字段格式
-    pe = info.get("trailingPE") if info.get("trailingPE") is not None else info.get("forwardPE", 0)
-    pb = info.get("priceToBook", 0)
-    roe = info.get("returnOnEquity", 0)
-    if roe is not None and roe != 0:
+    pe = info.get("trailingPE") if info.get("trailingPE") is not None else info.get("forwardPE") or 0
+    pb = info.get("priceToBook") or 0
+    roe = info.get("returnOnEquity") or 0
+    if roe != 0:
         roe = roe * 100  # 小数转百分比
-    gross_margin = info.get("grossMargins", 0)
-    if gross_margin is not None and gross_margin != 0:
+    gross_margin = info.get("grossMargins") or 0
+    if gross_margin != 0:
         gross_margin = gross_margin * 100
-    revenue = info.get("totalRevenue", 0)
-    profit_growth = info.get("earningsGrowth", 0)
-    if profit_growth is not None and profit_growth != 0:
+    revenue = info.get("totalRevenue") or 0
+    profit_growth = info.get("earningsGrowth") or 0
+    if profit_growth != 0:
         profit_growth = profit_growth * 100
-    debt_ratio = info.get("debtToEquity", 0)
+    debt_ratio = info.get("debtToEquity") or 0
 
     return {
         "f14": info.get("shortName", ticker),  # 股票名称
@@ -168,22 +168,22 @@ def fetch_us_financials(ticker: str) -> dict:
         income = stock.income_stmt
         if income is not None and not income.empty:
             result["income_stmt"] = income
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"  [警告] 获取 {ticker} 利润表失败: {e}")
 
     try:
         bs = stock.balance_sheet
         if bs is not None and not bs.empty:
             result["balance_sheet"] = bs
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"  [警告] 获取 {ticker} 资产负债表失败: {e}")
 
     try:
         cf = stock.cashflow
         if cf is not None and not cf.empty:
             result["cashflow"] = cf
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"  [警告] 获取 {ticker} 现金流量表失败: {e}")
 
     return result
 
@@ -221,31 +221,31 @@ def calculate_us_financial_health(quote: dict, financials: dict) -> dict:
     """
     health = {}
 
-    pe = quote.get("f9", 0)
-    pb = quote.get("f23", 0)
-    roe = quote.get("f37", 0)
-    debt_ratio = quote.get("f34", 0)
-    profit_growth = quote.get("f41", 0)
+    pe = quote.get("f9") or 0
+    pb = quote.get("f23") or 0
+    roe = quote.get("f37") or 0
+    debt_ratio = quote.get("f34") or 0
+    profit_growth = quote.get("f41") or 0
 
-    health["市盈率"] = pe if pe else 0
-    health["市净率"] = pb if pb else 0
-    health["ROE"] = roe if roe else 0
-    health["资产负债率"] = debt_ratio if debt_ratio else 0
-    health["净利润同比"] = profit_growth if profit_growth else 0
+    health["市盈率"] = pe if pe is not None else 0
+    health["市净率"] = pb if pb is not None else 0
+    health["ROE"] = roe if roe is not None else 0
+    health["资产负债率"] = debt_ratio if debt_ratio is not None else 0
+    health["净利润同比"] = profit_growth if profit_growth is not None else 0
 
     # 排雷逻辑
     red_flags = []
     warnings = []
 
-    if pe and pe > 100:
+    if pe is not None and pe > 100:
         warnings.append(f"市盈率偏高（{pe:.1f}）")
-    if pe and pe < 0:
+    if pe is not None and pe < 0:
         red_flags.append("市盈率为负（亏损）")
 
-    if debt_ratio and debt_ratio > 200:
+    if debt_ratio is not None and debt_ratio > 200:
         warnings.append(f"资产负债率偏高（{debt_ratio:.1f}%）")
 
-    if roe and roe < 0:
+    if roe is not None and roe < 0:
         red_flags.append("ROE 为负")
 
     health["排雷红灯"] = red_flags

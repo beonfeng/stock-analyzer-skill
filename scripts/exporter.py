@@ -279,7 +279,7 @@ def _simple_md_to_html(md_content: str) -> str:
                     break
             level = min(level, 6)
             text = stripped[level:].strip()
-            html_lines.append(f"<h{level}>{text}</h{level}>")
+            html_lines.append(f"<h{level}>{html.escape(text)}</h{level}>")
             continue
 
         # 分隔线
@@ -331,8 +331,10 @@ def _simple_md_to_html(md_content: str) -> str:
 
 def _inline_format(text: str) -> str:
     """处理行内格式：粗体、行内代码"""
+    # 先转义 HTML 特殊字符
+    text = html.escape(text)
+    # 行内代码（先处理，避免被粗体正则干扰）
+    text = re.sub(r"`(.+?)`", r"<code>\1</code>", text)
     # 粗体
     text = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", text)
-    # 行内代码
-    text = re.sub(r"`(.+?)`", r"<code>\1</code>", text)
     return text

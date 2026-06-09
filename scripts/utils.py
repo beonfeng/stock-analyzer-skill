@@ -14,13 +14,14 @@
 import json
 import time
 import random
+import copy
 import http.client
 import ssl
 import gzip
 import zlib
 from urllib.parse import urlencode
 from functools import lru_cache
-from datetime import datetime
+from datetime import datetime, date
 
 try:
     import brotli  # type: ignore[import-untyped]
@@ -34,16 +35,9 @@ except ImportError:
 # ============================================================
 
 # ============================================================
-# TLS 指纹随机化（不同 SSL 配置模拟不同浏览器/设备）
+# TLS 上下文（模块级单一实例）
 # ============================================================
-def _create_ssl_context():
-    """创建随机化的 SSL 上下文，模拟不同浏览器的 TLS 指纹"""
-    ctx = ssl.create_default_context()
-    # 随机化 cipher suite 顺序（部分服务端会检查 TLS 指纹）
-    # Python ssl 模块不直接支持 cipher 排序，但我们可以用不同配置
-    return ctx
-
-_ssl_ctx = _create_ssl_context()
+_ssl_ctx = ssl.create_default_context()
 
 # ============================================================
 # 反封锁策略配置
@@ -230,8 +224,7 @@ def _rate_limit():
         print("  [冷却] 冷却完成，恢复请求")
 
     # ── 层 1：非交易日降频 ──
-    from datetime import date as _date
-    is_weekend = _date.today().weekday() >= 5
+    is_weekend = date.today().weekday() >= 5
     effective_max_per_min = max(6, _max_requests_per_minute // 2) if is_weekend else _max_requests_per_minute
     effective_min_interval = _max_request_interval if is_weekend else _min_request_interval
 
@@ -293,7 +286,7 @@ def _get_ttl_for_path(path):
 def _set_cache(cache_key, data, path=""):
     """设置缓存"""
     # 限制缓存大小
-    if len(_request_cache) > 1000:
+    while len(_request_cache) > 1000:
         # 删除最早的缓存条目（近似 FIFO，O(1) 替代 O(n) 扫描）
         oldest_key = next(iter(_request_cache))
         del _request_cache[oldest_key]
@@ -391,7 +384,7 @@ def _http_get(host, path, params=None, timeout=15, retries=2, use_cache=True):
     url = path
     if params:
         # 添加随机噪声参数（打乱缓存键指纹，绕过服务端请求模式检测）
-        noisy_params = dict(params)
+        noisy_params = copy.deepcopy(params)
         noisy_params["_"] = str(int(time.time() * 1000))  # 时间戳
         if random.random() < 0.5:
             noisy_params["cb"] = f"jQuery{random.randint(10**9, 10**10)}_{random.randint(10**12, 10**13)}"
@@ -408,11 +401,7 @@ def _http_get(host, path, params=None, timeout=15, retries=2, use_cache=True):
             # 获取随机请求头
             headers = _get_random_headers()
 
-            # 每次请求创建新的 SSL 上下文（变化 TLS session ticket，降低指纹识别率）
-            if random.random() < 0.3:  # 30% 概率使用新 SSL 上下文
-                ctx = ssl.create_default_context()
-            else:
-                ctx = _ssl_ctx
+            ctx = _ssl_ctx
 
             conn = http.client.HTTPSConnection(host, context=ctx, timeout=timeout)
             conn.request("GET", url, headers=headers)
@@ -423,7 +412,6 @@ def _http_get(host, path, params=None, timeout=15, retries=2, use_cache=True):
                 raise ConnectionError(f"HTTP {resp.status}: rate limited by server")
 
             data = resp.read()
-            conn.close()
 
             # 处理压缩
             encoding = resp.getheader('Content-Encoding', '')
@@ -440,8 +428,8 @@ def _http_get(host, path, params=None, timeout=15, retries=2, use_cache=True):
                             data = brotli.decompress(data)
                         except Exception:
                             pass
-            except Exception:
-                pass
+            except Exception as de:
+                print(f"  [警告] 解压缩失败: {de}")
 
             # 尝试多种编码
             for enc in ['utf-8', 'gbk', 'gb2312', 'latin-1']:
@@ -466,11 +454,6 @@ def _http_get(host, path, params=None, timeout=15, retries=2, use_cache=True):
 
         except Exception as e:
             last_err = e
-            if conn:
-                try:
-                    conn.close()
-                except Exception:
-                    pass
 
             # 连接拒绝类错误 → 标记 Host 错误，不重试
             if _is_connection_error(e):
@@ -488,11 +471,20 @@ def _http_get(host, path, params=None, timeout=15, retries=2, use_cache=True):
                 time.sleep(wait_time)
                 continue
 
+        finally:
+            if conn:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+
     raise last_err
 
 
-def _http_get_safe(host, path, params=None, timeout=15, retries=2, default={}, use_cache=True):
+def _http_get_safe(host, path, params=None, timeout=15, retries=2, default=None, use_cache=True):
     """安全版 _http_get，失败返回默认值而非抛异常"""
+    if default is None:
+        default = {}
     try:
         return _http_get(host, path, params, timeout, retries, use_cache)
     except Exception as e:
@@ -517,22 +509,21 @@ def get_cache_stats():
     }
 
 
-def is_trading_day(date=None):
+def is_trading_day(dt=None):
     """
     判断指定日期是否为交易日（排除周末）。
 
     注意：不包含节假日判断（如春节、国庆等），仅排除周六日。
 
     Args:
-        date: datetime.date 对象，默认为今天
+        dt: datetime.date 对象，默认为今天
 
     Returns:
         bool: True 表示是交易日（周一~周五）
     """
-    if date is None:
-        from datetime import date as _date
-        date = _date.today()
-    return date.weekday() < 5  # 0=周一, 4=周五, 5=周六, 6=周日
+    if dt is None:
+        dt = date.today()
+    return dt.weekday() < 5  # 0=周一, 4=周五, 5=周六, 6=周日
 
 
 def get_session_request_stats():

@@ -24,6 +24,25 @@
 
 ### 修复
 
+- **全面代码审计修复**（29 Bug + 24 优化）：
+  - CRITICAL: 可变默认参数 `default={}` 跨调用数据污染（utils.py）
+  - CRITICAL: `get_stock_name` 返回值元组拆包优先级（analyzer.py）
+  - CRITICAL: `analyze_stock` 空 DataFrame 未防护导致 IndexError（analyzer.py）
+  - CRITICAL: `_section_trade_suggestion` 未检查 `weighted_score` 导致 TypeError（analyzer.py）
+  - CRITICAL: filter 参数注入风险（analyzer.py）
+  - HIGH: XSS 标题/表格内容未转义（exporter.py）
+  - HIGH: K 线数据 `float()` 未用 `safe_num()` 导致 ValueError（analyzer.py）
+  - HIGH: 涨跌幅计算除零风险（analyzer.py）
+  - HIGH: `ReportContext.__init__` 不校验必填字段（analyzer.py）
+  - HIGH: `us_stock.py` 运算符优先级、None 值传播、浮点真值检查
+  - HIGH: 连接对象泄漏、缓存参数浅拷贝污染（utils.py）
+  - MEDIUM: 对比分析市值/涨跌幅维度未计入总分（comparison.py）
+  - MEDIUM: 港股代码支持扩展为 4-5 位（market_utils.py）
+  - MEDIUM: 北交所 4 开头代码支持（market_utils.py）
+  - MEDIUM: `fetch_stock_news` 日期切片 None 防护（analyzer.py）
+  - MEDIUM: `f115`/`f104`/`f105` 字段缺失（analyzer.py）
+  - MEDIUM: 移除未使用的导入（analyzer.py）
+  - 以及 24 项 LOW 级别优化
 - **行业板块数据获取失败**：`82.push2.eastmoney.com` 不稳定（频繁 RemoteDisconnected），切换为 `push2.eastmoney.com`
 - **严重**：`generate_enhanced_comparison_report` 中 PE/PB/市值格式化前未做 `safe_num` 转换，API 返回异常值时崩溃
 - **严重**：`cmd_compare` 始终传空 `financial_data` 给 `calculate_financial_health`，财务报表数据从未使用

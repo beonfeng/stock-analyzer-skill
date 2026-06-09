@@ -103,10 +103,9 @@ class TestGetMarketInfo:
         with pytest.raises(ValueError, match="无法识别"):
             get_market_info('')
 
-    def test_4_digit_code_raises(self):
-        """测试 4 位代码"""
-        with pytest.raises(ValueError, match="无法识别"):
-            get_market_info('1234')
+    def test_4_digit_code_is_hk(self):
+        """测试 4 位代码（港股，如 0700 → 00700）"""
+        assert get_market_info('1234') == ('HK', 116, 1000)
 
     def test_code_with_whitespace(self):
         """测试带空格的代码"""

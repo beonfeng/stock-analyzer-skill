@@ -137,8 +137,6 @@ def fetch_historical_valuation(code, years=5):
         dict: {'PE': list, 'PB': list, '股息率': list}
             如果无法获取历史数据，返回空列表的字典
     """
-    import datetime
-
     result = {'PE': [], 'PB': [], '股息率': []}
 
     # API 不返回 PE/PB 历史序列，使用经验阈值判断

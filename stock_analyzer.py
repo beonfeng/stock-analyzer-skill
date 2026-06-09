@@ -59,9 +59,9 @@ def cmd_analyze(args):
     fmt = getattr(args, "format", "md") or "md"
     for code in args.codes:
         code = code.strip()
-        # 支持股票名称输入，自动转换为代码
-        code = resolve_stock_code(code)
         try:
+            # 支持股票名称输入，自动转换为代码
+            code = resolve_stock_code(code)
             report_path = analyze_stock(code, args.output)
             # 导出 HTML/PDF
             if fmt != "md" and report_path:

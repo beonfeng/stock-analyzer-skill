@@ -18,6 +18,7 @@
 - 美股：105（yfinance 获取数据）
 """
 
+import math
 import re
 
 
@@ -53,8 +54,9 @@ def get_market_info(code):
     if re.search(r'[A-Za-z]', code):
         return ('US', 105, 1)
 
-    # 港股：5 位数字
-    if len(code) == 5 and code.isdigit():
+    # 港股：4-5 位数字（4 位补零到 5 位，如 0700 → 00700）
+    if code.isdigit() and len(code) in (4, 5):
+        code = code.zfill(5)
         return ('HK', 116, 1000)
 
     # A 股/ETF：6 位数字
@@ -65,8 +67,8 @@ def get_market_info(code):
         # 深交所：0xxxxx（A 股）、3xxxxx（创业板）、1xxxxx（ETF/LOF）
         elif code[0] in '031':
             return ('SZ', 0, 100)
-        # 北交所：8xxxxx（如 830799）
-        elif code[0] == '8':
+        # 北交所：8xxxxx（如 830799）、4xxxxx（如 430047）
+        elif code[0] in '84':
             return ('BJ', 0, 100)
 
     raise ValueError(f"无法识别的股票代码格式: {code}")
@@ -101,6 +103,9 @@ def convert_price(raw_price, market):
     try:
         price = float(raw_price)
     except (ValueError, TypeError):
+        return 0.0
+
+    if math.isnan(price) or math.isinf(price):
         return 0.0
 
     # 根据市场类型除以对应除数（复用 get_market_info 的逻辑）
