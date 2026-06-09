@@ -23,7 +23,7 @@ from functools import lru_cache
 from datetime import datetime
 
 try:
-    import brotli
+    import brotli  # type: ignore[import-untyped]
     HAS_BROTLI = True
 except ImportError:
     HAS_BROTLI = False
