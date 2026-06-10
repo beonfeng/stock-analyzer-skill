@@ -4,7 +4,7 @@
 
 [![MIT License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Python 3.8+](https://img.shields.io/badge/python-3.8+-yellow.svg)](https://www.python.org/)
-[![Tests 240+](https://img.shields.io/badge/tests-240+-green.svg)](tests/)
+[![Tests 241+](https://img.shields.io/badge/tests-241+-green.svg)](tests/)
 
 直连东方财富 API，零浏览器依赖，2 个 Python 包即可运行。适用于 **Claude Code**、**Cursor**、**OpenClaw** 等 AI Agent，也可作为独立 CLI 工具使用。
 
@@ -173,7 +173,7 @@ stock-analyzer-skill/
 - 🐛 **Bug 修复** — 直接提 PR
 - ✨ **新功能** — 先开 Issue 讨论方案
 - 📝 **文档改进** — 随时欢迎
-- 🧪 **测试补充** — 目前 240+，目标 300+
+- 🧪 **测试补充** — 目前 241+，目标 300+
 
 提交的功能点会记录在 [CHANGELOG.md](CHANGELOG.md) 中。
 
