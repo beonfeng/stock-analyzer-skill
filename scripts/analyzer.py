@@ -109,14 +109,15 @@ def fetch_kline(code, days=500):
 
 
 def fetch_realtime_quote(code):
-    """获取实时行情 + 财务指标"""
+    """获取实时行情 + 财务指标 + 资金流向（合并请求，节省 1 次 API 调用）"""
     market_code, market_id, _ = get_market_info(code)
 
     # 方法1（优先）：直接查询单只股票 — O(1) 请求，适用于所有市场
+    # 合并行情 + 资金流向字段，避免两次 push2 请求
     params2 = {
         "secid": get_secid(code, market_id),
         "ut": "fa5fd1943c7b386f172d6893dbfba10b",
-        "fields": "f43,f44,f45,f46,f47,f48,f50,f51,f52,f55,f57,f58,f60,f62,f71,f92,f105,f115,f116,f117,f162,f167,f168,f169,f170,f171,f173,f177,f183,f184,f185,f186,f187,f188,f189,f190,f191,f192,f193",
+        "fields": "f43,f44,f45,f46,f47,f48,f50,f51,f52,f55,f57,f58,f60,f62,f71,f92,f105,f115,f116,f117,f162,f167,f168,f169,f170,f171,f173,f177,f183,f184,f185,f186,f187,f188,f189,f190,f191,f192,f193,f66,f69,f72,f75,f78,f81,f84,f87,f267,f164,f174",
         "invt": "2",
     }
     j2 = _http_get_safe("push2.eastmoney.com", "/api/qt/stock/get", params2)
@@ -150,6 +151,21 @@ def fetch_realtime_quote(code):
         else:
             pb = 0
 
+        # 构建资金流向数据（与行情合并，避免额外 API 请求）
+        fund_flow = {
+            "今日": {
+                "f62": direct("f62"),
+                "f184": direct("f184"),
+                "f66": direct("f66"), "f69": direct("f69"),
+                "f72": direct("f72"), "f75": direct("f75"),
+                "f78": direct("f78"), "f81": direct("f81"),
+                "f84": direct("f84"), "f87": direct("f87"),
+            },
+            "3日": {"f62": direct("f267")},
+            "5日": {"f62": direct("f164")},
+            "10日": {"f62": direct("f174")},
+        }
+
         return {
             "f14": data.get("f58", ""),  # 名称
             "f2": convert_field("f43"),  # 最新价
@@ -165,6 +181,7 @@ def fetch_realtime_quote(code):
             "f41": direct("f185"),  # 净利润同比（已经是百分比）
             "f34": direct("f188"),  # 资产负债率（已经是百分比）
             "f115": direct("f115"),  # 每股收益
+            "_fund_flow": fund_flow,  # 合并的资金流向数据
             "market": market_code,  # 市场类型
         }
     # 方法2（备选）：从列表中查找 — O(n) 遍历，仅 A 股可用
@@ -205,8 +222,16 @@ def fetch_realtime_quote(code):
     return {"market": market_code}
 
 
-def fetch_fund_flow(code):
-    """获取个股资金流向（push2 → 腾讯外盘/内盘 多源回退）"""
+def fetch_fund_flow(code, quote=None):
+    """获取个股资金流向（优先从行情 quote 提取 → push2 → 腾讯外盘/内盘 多源回退）"""
+    # 方法0（优化）：从已合并的行情 quote 中提取资金流向数据，省 1 次 API 请求
+    if quote and quote.get("_fund_flow"):
+        flow = quote["_fund_flow"]
+        # 验证数据有效性（f62 非零或订单分级数据存在）
+        today = flow.get("今日", {})
+        if today.get("f62", 0) != 0 or today.get("f66", 0) != 0:
+            return flow
+
     _, market_id, _ = get_market_info(code)
 
     # 方法1：东方财富 push2（含超大单/大单/中单/小单拆分）
@@ -1561,7 +1586,11 @@ def _section_news(ctx):
         L.append("| 时间 | 标题 | 来源 |")
         L.append("|------|------|------|")
         for _, row in ctx.news_df.head(15).iterrows():
-            L.append(f"| {row['发布时间']} | {row['新闻标题']} | {row['文章来源']} |")
+            url = row.get('链接', '')
+            title = row['新闻标题']
+            if url:
+                title = f"[{title}]({url})"
+            L.append(f"| {row['发布时间']} | {title} | {row['文章来源']} |")
     else:
         L.append("> 暂无近期新闻")
 
@@ -2001,11 +2030,11 @@ def analyze_stock(code, output_dir="."):
     # ── 渐进降级：根据请求预算决定数据层级 ──
     stats = get_session_request_stats()
     available = 60 - stats["total_requests"]
-    # Tier 4 (奢侈): 同行资金流向 — 需要 >25 次额度
-    # Tier 3 (可选): 行业对比 — 需要 >15 次额度
+    # Tier 4 (奢侈): 同行资金流向 — 需要 >30 次额度
+    # Tier 3 (可选): 行业对比 — 需要 >25 次额度
     # Tier 2 (重要): 所有默认数据 — 需要 >10 次额度
     # Tier 1 (必须): K线 + 行情 + 财务 + 公司概况
-    current_tier = 4 if available > 25 else (3 if available > 15 else (2 if available > 10 else 1))
+    current_tier = 4 if available > 30 else (3 if available > 25 else (2 if available > 10 else 1))
     if current_tier < 4:
         print(f"  [降级] 可用请求额度仅 {available} 次，自动降级到 Tier {current_tier}")
 
@@ -2029,8 +2058,8 @@ def analyze_stock(code, output_dir="."):
         fund_flow, north_flow, news_df, industry_df, financial_data = {}, {}, pd.DataFrame(), pd.DataFrame(), {}
         tick_request_queue("跳过美股专属")
     else:
-        print("[3] 获取资金流向...")
-        fund_flow = fetch_fund_flow(code)
+        print("[3] 获取资金流向... [从行情数据提取，零额外请求]")
+        fund_flow = fetch_fund_flow(code, quote=quote)
         tick_request_queue("资金流向")
 
         print("[4] 获取北向资金... [Memo 跨分析缓存]")

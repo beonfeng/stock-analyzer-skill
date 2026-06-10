@@ -257,15 +257,17 @@ def analyze_valuation_comparison(code, peers):
     return result
 
 
-def analyze_fund_flow_comparison(code, peers):
+def analyze_fund_flow_comparison(code, peers, industry_code=None):
     """
     分析资金流向对比。
 
     获取行业内各股票的资金流向，按今日主力净流入和 5 日主力净流入排名。
+    优先使用 clist 批量查询（1 次请求），回退到逐股查询。
 
     Args:
         code: 股票代码（如 '600519'）
         peers: 同行业股票列表（来自 fetch_industry_peers）
+        industry_code: 行业代码（如 'BK0477'），提供时启用批量查询
 
     Returns:
         dict: {
@@ -281,40 +283,67 @@ def analyze_fund_flow_comparison(code, peers):
     if not peers:
         return {'今日排名': [], '5日排名': []}
 
-    # 限制请求数量：只取市值前 15 名，避免大量 API 请求导致被限流
+    # 限制请求数量：只取市值前 15 名
     top_peers = sorted(peers, key=lambda x: x.get('总市值', 0), reverse=True)[:15]
+    top_codes = {p['代码'] for p in top_peers}
 
-    # 获取行业内各股票的资金流向
-    # 性能瓶颈：逐股调用 API，每只股票一次 HTTP 请求，15 只约需 30-60 秒
     flow_data = []
-    for i, peer in enumerate(top_peers):
-        peer_code = peer['代码']
-        peer_name = peer['名称']
-        print(f"  获取资金流向 {i+1}/{len(top_peers)}...")
 
-        # 获取个股资金流向
-        params = {
-            "secid": get_secid(peer_code, _get_market_id(peer_code)),
-            "ut": "7eea3edcaed734bea9cbfc24409ed989",
-            "fields": "f62,f184,f164,f174",
-        }
-        j = _http_get_safe("push2.eastmoney.com", "/api/qt/stock/get", params)
-        if not j or not j.get("data"):
+    # 方法1（优化）：通过 clist 批量查询行业资金流向（1 次请求替代 15 次）
+    if industry_code:
+        try:
+            params = {
+                "pn": "1", "pz": "5000",
+                "ut": UT_TOKEN,
+                "fltt": "2", "invt": "2", "fid": "f20",
+                "fs": f"b:{industry_code}+f:!50",
+                "fields": "f2,f3,f12,f14,f62,f164,f20",
+            }
+            j = _http_get_safe("push2.eastmoney.com", "/api/qt/clist/get", params)
+            if j and j.get("data"):
+                items = j.get("data", {}).get("diff", [])
+                for item in items:
+                    stock_code = str(item.get("f12", ""))
+                    if stock_code in top_codes:
+                        flow_data.append({
+                            '代码': stock_code,
+                            '名称': item.get("f14", ""),
+                            '今日主力净流入': _safe_float(item.get("f62", 0)),
+                            '5日主力净流入': _safe_float(item.get("f164", 0)),
+                        })
+        except Exception as e:
+            print(f"  [警告] 批量资金流向查询失败: {e}，回退到逐股查询")
+
+    # 方法2（回退）：逐股查询（当批量查询不可用或失败时）
+    if not flow_data:
+        for i, peer in enumerate(top_peers):
+            peer_code = peer['代码']
+            peer_name = peer['名称']
+            print(f"  获取资金流向 {i+1}/{len(top_peers)}...")
+
+            # 获取个股资金流向
+            params = {
+                "secid": get_secid(peer_code, _get_market_id(peer_code)),
+                "ut": "7eea3edcaed734bea9cbfc24409ed989",
+                "fields": "f62,f184,f164,f174",
+            }
+            j = _http_get_safe("push2.eastmoney.com", "/api/qt/stock/get", params)
+            if not j or not j.get("data"):
+                flow_data.append({
+                    '代码': peer_code,
+                    '名称': peer_name,
+                    '今日主力净流入': 0,
+                    '5日主力净流入': 0,
+                })
+                continue
+
+            data = j["data"]
             flow_data.append({
                 '代码': peer_code,
                 '名称': peer_name,
-                '今日主力净流入': 0,
-                '5日主力净流入': 0,
+                '今日主力净流入': _safe_float(data.get("f62", 0)),
+                '5日主力净流入': _safe_float(data.get("f164", 0)),
             })
-            continue
-
-        data = j["data"]
-        flow_data.append({
-            '代码': peer_code,
-            '名称': peer_name,
-            '今日主力净流入': _safe_float(data.get("f62", 0)),
-            '5日主力净流入': _safe_float(data.get("f164", 0)),
-        })
 
     # 按今日主力净流入排名（从高到低）
     today_sorted = sorted(flow_data, key=lambda x: x['今日主力净流入'], reverse=True)
@@ -617,8 +646,8 @@ def analyze_industry_comparison(code):
     # 3. 分析估值对比
     valuation_comparison = analyze_valuation_comparison(code, peers)
 
-    # 4. 分析资金流向对比
-    fund_flow_comparison = analyze_fund_flow_comparison(code, peers)
+    # 4. 分析资金流向对比（传入 industry_code 启用批量查询）
+    fund_flow_comparison = analyze_fund_flow_comparison(code, peers, industry_code)
 
     # 5. 分析行业景气度
     industry_sentiment = analyze_industry_sentiment(industry_code)
