@@ -139,8 +139,7 @@ def fetch_realtime_quote(code):
             "f115": direct("f115"),  # 每股收益
             "market": market_code,  # 市场类型
         }
-    # 方法2（备选）：从列表中遍历查找 — O(n) 性能较差，仅 A 股可用
-    # 注意：此方法会请求约 5000 只股票的列表再逐个匹配，单股分析建议优先使用方法1
+    # 方法2（备选）：从列表中查找 — O(n) 遍历，仅 A 股可用
     if market_code in ('SH', 'SZ'):
         params = {
             "pn": "1", "pz": "5000", "po": "1", "np": "1",
@@ -151,10 +150,11 @@ def fetch_realtime_quote(code):
         }
         j = _http_get_safe("push2.eastmoney.com", "/api/qt/clist/get", params)
         items = j.get("data", {}).get("diff", []) if j else []
-        for item in items:
-            if str(item.get("f12", "")) == code:
-                item["market"] = market_code
-                return item
+        # 构建字典索引 O(m+n) 替代 O(m×n) 遍历
+        item_map = {str(item.get("f12", "")): item for item in items if item.get("f12")}
+        if code in item_map:
+            item_map[code]["market"] = market_code
+            return item_map[code]
 
     return {"market": market_code}
 
@@ -190,8 +190,19 @@ def fetch_fund_flow(code):
     return result
 
 
+# 会话级缓存：北向资金和行业板块是非个股数据，整个会话复用一次即可
+_north_flow_cache = None
+_industry_boards_cache = None
+_session_cache_timestamp = 0
+_SESSION_CACHE_TTL = 600  # 会话缓存 10 分钟
+
+
 def fetch_north_flow():
-    """获取北向资金数据（使用东方财富北向资金专用接口）"""
+    """获取北向资金数据（会话级缓存：非个股数据，不同股票分析复用）"""
+    global _north_flow_cache
+    if _north_flow_cache is not None:
+        return _north_flow_cache
+
     result = {}
     # 北向资金使用专用的净买入数据接口
     # 沪股通/深股通净买入金额通过资金流向接口获取
@@ -214,6 +225,7 @@ def fetch_north_flow():
             result[symbol] = pd.DataFrame(rows)
         except Exception as e:
             print(f"  [警告] 北向资金({symbol})获取失败: {e}")
+    _north_flow_cache = result
     return result
 
 
@@ -279,7 +291,11 @@ def fetch_stock_news(code):
 
 
 def fetch_industry_boards():
-    """获取行业板块数据"""
+    """获取行业板块数据（会话级缓存：非个股数据，不同股票分析复用）"""
+    global _industry_boards_cache
+    if _industry_boards_cache is not None:
+        return _industry_boards_cache
+
     params = {
         "pn": "1", "pz": "50", "po": "1", "np": "1",
         "ut": "bd1d9ddb04089700cf9c27f6f7426281",
@@ -420,7 +436,10 @@ def fetch_company_profile(code):
                     by_date[date].append(item)
 
                 # API 返回 ISO 格式日期（如 "2024-03-31T00:00:00"），字符串比较等价于日期比较
-                latest_date = max(by_date.keys())
+                valid_dates = [k for k in by_date.keys() if k]
+                if not valid_dates:
+                    raise ValueError("无有效日期")
+                latest_date = max(valid_dates)
                 latest_items = by_date[latest_date]
                 total_income = sum(it.get('MAIN_BUSINESS_INCOME', 0) for it in latest_items)
 
@@ -720,7 +739,7 @@ def calculate_financial_health(quote, financial_data):
     pb = safe_num(quote.get("f23", 0))  # PB
     roe = safe_num(quote.get("f37", 0))  # ROE
     gross_margin = safe_num(quote.get("f49", 0))  # 毛利率
-    revenue_growth = safe_num(quote.get("f40", 0))  # 营收同比
+    revenue = safe_num(quote.get("f40", 0))  # 营业收入（元）
     profit_growth = safe_num(quote.get("f41", 0))  # 净利润同比
     debt_ratio = safe_num(quote.get("f34", 0))  # 资产负债率
 
@@ -728,7 +747,7 @@ def calculate_financial_health(quote, financial_data):
     result["PB"] = pb
     result["ROE"] = roe
     result["毛利率"] = gross_margin
-    result["营收同比"] = revenue_growth
+    result["营业收入"] = revenue
     result["净利润同比"] = profit_growth
     result["资产负债率"] = debt_ratio
 
@@ -1415,7 +1434,7 @@ def _section_financial_screen(ctx):
         ("市净率", "PB", "股价/每股净资产，<1为破净", "num"),
         ("ROE", "ROE", "净资产收益率，衡量盈利能力", "pct"),
         ("毛利率", "毛利率", "收入扣除直接成本后的利润率", "pct"),
-        ("营业收入", "营收同比", "公司总收入规模", "amount"),
+        ("营业收入", "营业收入", "公司总收入规模", "amount"),
         ("净利润同比", "净利润同比", "净利润同比增长率", "pct"),
         ("资产负债率", "资产负债率", "总负债/总资产，越高财务风险越大", "pct"),
     ]:

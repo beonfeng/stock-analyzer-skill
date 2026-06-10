@@ -428,6 +428,9 @@ def calculate_extended_indicators(df, indicators):
     result['RSI背离'] = detect_rsi_divergence(close, rsi_series, lookback=20)
 
     # 2. MACD 柱状图分析
+    # 注意：此处需要完整的 DIF/DEA 序列用于柱状图分析（连续红柱天数、斜率等），
+    # 与 analyzer.py 中的单值 DIF/DEA 计算目的不同（单值用于评级），
+    # 因此需要重新计算完整序列，并非重复逻辑。
     ema12 = close.ewm(span=12, adjust=False).mean()
     ema26 = close.ewm(span=26, adjust=False).mean()
     dif = ema12 - ema26

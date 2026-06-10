@@ -30,10 +30,15 @@
 - **每股收益显示**：`f115` 为 0 或缺失时显示 `-`
 - **年化涨幅计算**：数据不足时（<60天）不触发逆向定价检查，避免误判
 - **反证清单正则**：支持阿拉伯数字标题（如 `## 11. 反证清单`）
+- **变量名错误**：`calculate_financial_health` 中 `revenue_growth` → `revenue`（`f40` 是营业收入绝对值不是增长率）
+- **market_cap 安全转换**：`comparison.py` 中添加 `safe_num` 包装，防止 TypeError
+- **空日期防御**：主营构成按日期分组时过滤空字符串 key
+- **O(n) 搜索优化**：`fetch_realtime_quote` 方法2 从 O(n) 遍历改为 O(1) 字典索引
 
 ### 改进
 
 - 测试用例从 240 增加到 241
+- **EMA 计算说明**：`technical_indicators.py` 添加注释说明 MACD 序列计算与 analyzer.py 中单值计算的区别（序列用于柱状图分析，非重复逻辑）
 
 ## [1.2.0] - 2026-06-08
 

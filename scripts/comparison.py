@@ -68,8 +68,8 @@ def compare_two_stocks(
         score_b += 1
 
     # 3. 市值对比
-    mv_a = stock_a.get("market_cap", 0)
-    mv_b = stock_b.get("market_cap", 0)
+    mv_a = safe_num(stock_a.get("market_cap", 0))
+    mv_b = safe_num(stock_b.get("market_cap", 0))
     mv_winner = "a" if mv_a > mv_b else "b" if mv_b > mv_a else "tie"
     comparison.append({
         "dimension": "总市值",
