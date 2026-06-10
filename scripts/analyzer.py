@@ -19,7 +19,7 @@ from .utils import (_http_get, _http_get_safe, safe_num, safe_display,
     init_request_queue, tick_request_queue,
     memo_get, memo_set, get_session_request_stats)
 from .alternative_sources import (fetch_quote_tencent, fetch_quote_sina,
-    fetch_kline_tencent, fetch_kline_sina)
+    fetch_kline_tencent, fetch_kline_sina, fetch_fund_flow_tencent)
 from .technical_indicators import calculate_extended_indicators
 from .valuation_analysis import analyze_valuation_percentile
 from .industry_analysis import analyze_industry_comparison
@@ -206,34 +206,43 @@ def fetch_realtime_quote(code):
 
 
 def fetch_fund_flow(code):
-    """获取个股资金流向（单次请求获取所有周期）"""
+    """获取个股资金流向（push2 → 腾讯外盘/内盘 多源回退）"""
     _, market_id, _ = get_market_info(code)
+
+    # 方法1：东方财富 push2（含超大单/大单/中单/小单拆分）
     params = {
         "secid": get_secid(code, market_id),
         "ut": "7eea3edcaed734bea9cbfc24409ed989",
         "fields": "f62,f184,f66,f69,f72,f75,f78,f81,f84,f87,f124,f267,f164,f174",
     }
     j = _http_get_safe("push2.eastmoney.com", "/api/qt/stock/get", params)
-    if not j or not j.get("data"):
-        return {}
-    data = j["data"]
-    # 今日的详细数据（含超大单/大单/中单/小单拆分）
-    today_data = {
-        "f62": data.get("f62", 0),   # 今日主力净流入
-        "f184": data.get("f184", 0), # 今日主力净流入占比
-        "f66": data.get("f66", 0), "f69": data.get("f69", 0),   # 超大单
-        "f72": data.get("f72", 0), "f75": data.get("f75", 0),   # 大单
-        "f78": data.get("f78", 0), "f81": data.get("f81", 0),   # 中单
-        "f84": data.get("f84", 0), "f87": data.get("f87", 0),   # 小单
-    }
-    # 多周期仅返回主力净流入（API 仅提供汇总值）
-    result = {
-        "今日": today_data,
-        "3日": {"f62": data.get("f267", 0)},
-        "5日": {"f62": data.get("f164", 0)},
-        "10日": {"f62": data.get("f174", 0)},
-    }
-    return result
+    if j and j.get("data"):
+        data = j["data"]
+        today_data = {
+            "f62": data.get("f62", 0),
+            "f184": data.get("f184", 0),
+            "f66": data.get("f66", 0), "f69": data.get("f69", 0),
+            "f72": data.get("f72", 0), "f75": data.get("f75", 0),
+            "f78": data.get("f78", 0), "f81": data.get("f81", 0),
+            "f84": data.get("f84", 0), "f87": data.get("f87", 0),
+        }
+        return {
+            "今日": today_data,
+            "3日": {"f62": data.get("f267", 0)},
+            "5日": {"f62": data.get("f164", 0)},
+            "10日": {"f62": data.get("f174", 0)},
+        }
+
+    # 方法2（备选源）：腾讯外盘/内盘估算
+    try:
+        tencent_flow = fetch_fund_flow_tencent(code)
+        if tencent_flow:
+            print(f"  [提示] 资金流向来自腾讯财经(外盘-内盘估算，已简化)")
+            return tencent_flow
+    except Exception:
+        pass
+
+    return {}
 
 
 def fetch_north_flow():
@@ -290,10 +299,13 @@ def fetch_stock_news(code):
                 org = item.get("orgSName", "") or item.get("orgName", "")
                 pub_date = (item.get("publishDate") or "")[:10]
                 if title:
+                    info_code = item.get("infoCode", "")
+                    url = f"https://data.eastmoney.com/report/zw/stock/{info_code}.html" if info_code else ""
                     rows.append({
                         "新闻标题": f"[研报] {title}",
                         "发布时间": pub_date,
                         "文章来源": org,
+                        "链接": url,
                     })
     except Exception as e:
         print(f"  [警告] 研报数据获取失败: {e}")
@@ -314,10 +326,13 @@ def fetch_stock_news(code):
             title = item.get("title", "") or item.get("noticeTitle", "")
             pub_date = (item.get("noticeDate") or "")[:10]
             if title:
+                art_code = item.get("art_code", "")
+                url = f"https://np-anotice-stock.eastmoney.com/api/security/ann/detail?art_code={art_code}" if art_code else ""
                 rows.append({
                     "新闻标题": f"[公告] {title}",
                     "发布时间": pub_date,
                     "文章来源": "巨潮资讯",
+                    "链接": url,
                 })
     except Exception as e:
         print(f"  [警告] 公告数据获取失败: {e}")
@@ -1375,6 +1390,12 @@ def _section_fund_flow(ctx):
     L.append("\n---\n## 三、资金分析\n")
 
     if ctx.fund_flow:
+        # 检查是否来自备选源
+        today = ctx.fund_flow.get("今日", {})
+        source_note = today.get("_source", "")
+        if source_note:
+            L.append(f"> 数据来源：{source_note}\n")
+
         L.append("资金流向反映市场中不同规模资金的买卖方向。")
         L.append("- **主力资金**（超大单+大单）：通常代表机构动向，对股价影响最大")
         L.append("- **超大单**（>100万元）：通常为大型机构或基金操作")
@@ -1834,6 +1855,30 @@ def _section_sentiment(ctx):
 
     L.append("\n---\n## 十五、新闻情感分析\n")
     L.append(summarize_sentiment(ctx.sentiment_result))
+
+    # 输出正/负面新闻标题及链接
+    positive_news = ctx.sentiment_result.get("positive_news", [])
+    negative_news = ctx.sentiment_result.get("negative_news", [])
+
+    if positive_news:
+        L.append("\n**正面新闻：**\n")
+        for n in positive_news:
+            title = n.get("新闻标题", n.get("title", ""))
+            url = n.get("链接", n.get("url", ""))
+            line = f"- [+] {title}"
+            if url:
+                line += f" — [查看]({url})"
+            L.append(line)
+
+    if negative_news:
+        L.append("\n**负面新闻：**\n")
+        for n in negative_news:
+            title = n.get("新闻标题", n.get("title", ""))
+            url = n.get("链接", n.get("url", ""))
+            line = f"- [-] {title}"
+            if url:
+                line += f" — [查看]({url})"
+            L.append(line)
 
     return L
 

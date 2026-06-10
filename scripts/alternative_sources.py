@@ -368,6 +368,73 @@ def fetch_kline_sina(code, days=500):
 
 
 # ============================================================
+# 腾讯财经 — 资金流向（基于外盘/内盘）
+# ============================================================
+
+def fetch_fund_flow_tencent(code):
+    """
+    从腾讯财经提取资金流向数据（外盘-内盘近似主力净流入）。
+
+    腾讯字段：
+    - Field 7: 外盘 (主动买入成交量, 手)
+    - Field 8: 内盘 (主动卖出成交量, 手)
+    外盘 - 内盘 ≈ 资金净流向（正值=流入，负值=流出）
+
+    注意：此方法无法区分超大单/大单/中单/小单，仅提供总量参考。
+
+    Args:
+        code: 股票代码
+
+    Returns:
+        dict: 东方财富兼容格式 {'今日': {...}}
+        None: 请求失败
+    """
+    market = _get_market_prefix(code)
+    prefix_map = {"SH": "sh", "SZ": "sz", "BJ": "bj"}
+    prefix = prefix_map.get(market, "sh")
+    symbol = f"{prefix}{code}"
+
+    raw = _http_fetch("qt.gtimg.cn", f"/q={symbol}", encoding='gbk')
+    if not raw:
+        return None
+
+    match = re.search(r'v_\w+="(.+)"', raw)
+    if not match:
+        return None
+
+    parts = match.group(1).split("~")
+    if len(parts) < 9:
+        return None
+
+    # 腾讯成交量单位是「手」，东方财富单位是「元」
+    outer_vol = _local_safe_num(parts[7])   # 外盘(手)
+    inner_vol = _local_safe_num(parts[8])   # 内盘(手)
+    current = _local_safe_num(parts[3])     # 最新价
+    amount_wan = _local_safe_num(parts[37])  # 成交额(万)
+
+    # 估算：外盘-内盘 手数差 × 均价 ≈ 主力净流入金额
+    net_vol = outer_vol - inner_vol  # 手
+    avg_price = (amount_wan * 1e4) / ((outer_vol + inner_vol) * 100) if (outer_vol + inner_vol) > 0 else current
+    net_amount = net_vol * 100 * avg_price  # 估算净流入金额(元)
+    total_amount = amount_wan * 1e4  # 总成交额(元)
+    net_pct = (net_amount / total_amount * 100) if total_amount > 0 else 0
+
+    return {
+        "今日": {
+            "f62": net_amount,           # 主力净流入(估算)
+            "f184": net_pct,             # 主力净流入占比
+            "f66": net_amount,           # 超大单(用总量近似)
+            "f69": net_pct,
+            "f72": 0, "f75": 0,          # 大单(无法拆分)
+            "f78": 0, "f81": 0,          # 中单(无法拆分)
+            "f84": 0, "f87": 0,          # 小单(无法拆分)
+            "_source": "腾讯财经(外盘-内盘估算)",
+        },
+        "3日": {"f62": 0}, "5日": {"f62": 0}, "10日": {"f62": 0},
+    }
+
+
+# ============================================================
 # 多源统一接口
 # ============================================================
 

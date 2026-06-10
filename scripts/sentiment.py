@@ -60,6 +60,8 @@ def analyze_sentiment(news_list: List[Dict[str, Any]]) -> Dict[str, Any]:
     pos_count = 0
     neg_count = 0
     key_news = []
+    positive_news = []  # 所有正面新闻
+    negative_news = []  # 所有负面新闻
     all_matched_pos = set()
     all_matched_neg = set()
 
@@ -86,12 +88,22 @@ def analyze_sentiment(news_list: List[Dict[str, Any]]) -> Dict[str, Any]:
         all_matched_pos.update(matched_pos)
         all_matched_neg.update(matched_neg)
 
+        # 保留原始新闻字段（含链接等元数据）
+        news_item = {
+            "新闻标题": title,
+            "链接": news.get("链接", ""),
+            "发布时间": news.get("发布时间", ""),
+            "文章来源": news.get("文章来源", ""),
+        }
+
         if pos_score > neg_score:
             pos_count += 1
+            positive_news.append(news_item)
             if pos_score >= 2:
                 key_news.append({"title": title, "sentiment": "positive", "keywords": list(matched_pos)})
         elif neg_score > pos_score:
             neg_count += 1
+            negative_news.append(news_item)
             if neg_score >= 2:
                 key_news.append({"title": title, "sentiment": "negative", "keywords": list(matched_neg)})
 
@@ -114,6 +126,8 @@ def analyze_sentiment(news_list: List[Dict[str, Any]]) -> Dict[str, Any]:
         "sentiment": sentiment,
         "positive_count": pos_count,
         "negative_count": neg_count,
+        "positive_news": positive_news,
+        "negative_news": negative_news,
         "summary": summary,
         "key_news": key_news[:5],
         "matched_keywords": {
