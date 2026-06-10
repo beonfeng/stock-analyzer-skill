@@ -504,7 +504,7 @@ def tick_request_queue(label=""):
         pct = _queue_completed / _queue_total * 100
         bar_len = 20
         filled = int(bar_len * _queue_completed / _queue_total)
-        bar = "█" * filled + "░" * (bar_len - filled)
+        bar = "#" * filled + "-" * (bar_len - filled)
         elapsed = time.time() - _queue_start_time
         if _queue_completed > 0:
             eta = elapsed / _queue_completed * (_queue_total - _queue_completed)
@@ -750,16 +750,16 @@ def print_request_stats():
     duration = stats["session_duration"]
     remaining = max(0, _SESSION_HARD_LIMIT - total)
 
-    print(f"\n{'─'*50}")
+    print(f"\n{'='*50}")
     print(f"  [统计] API 请求统计")
-    print(f"  实际请求: {total} / {_SESSION_HARD_LIMIT}（剩余 {remaining} 次）")
+    print(f"  实际请求: {total} / {_SESSION_HARD_LIMIT} (剩余 {remaining} 次)")
     print(f"  缓存命中: {hits}")
     print(f"  耗时: {duration:.1f}s")
-    print(f"  频率: ≤{_max_requests_per_minute}/min，间隔 {_min_request_interval:.1f}-{_max_request_interval:.1f}s")
+    print(f"  频率: <= {_max_requests_per_minute}/min, 间隔 {_min_request_interval:.1f}-{_max_request_interval:.1f}s")
     if _adaptive_direction > 0:
-        print(f"  [自适应] 频率放宽 → {_max_requests_per_minute}/min")
+        print(f"  [自适应] 频率放宽 -> {_max_requests_per_minute}/min")
     elif _adaptive_direction < 0:
-        print(f"  [自适应] 频率收紧 → {_max_requests_per_minute}/min")
+        print(f"  [自适应] 频率收紧 -> {_max_requests_per_minute}/min")
 
     if not is_trading_day():
         print(f"  [提示] 非交易日，频率已自动降低")
@@ -768,8 +768,8 @@ def print_request_stats():
     open_breakers = [(h, b) for h, b in _circuit_breakers.items() if b.state != CircuitState.CLOSED]
     if open_breakers:
         for host, br in open_breakers:
-            print(f"  [断路器] {host} → {br.state.value}（失败 {br.failure_count} 次）")
-    print(f"{'─'*50}")
+            print(f"  [断路器] {host} -> {br.state.value} (失败 {br.failure_count} 次)")
+    print(f"{'='*50}")
 
 
 def get_circuit_breaker_status():
