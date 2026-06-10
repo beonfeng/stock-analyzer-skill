@@ -315,7 +315,8 @@ def fetch_industry_boards():
             "上涨家数": item.get("f104", 0),
             "下跌家数": item.get("f105", 0),
         })
-    return pd.DataFrame(rows)
+    _industry_boards_cache = pd.DataFrame(rows)
+    return _industry_boards_cache
 
 
 def fetch_financial_report(code):
@@ -1898,9 +1899,14 @@ def analyze_stock(code, output_dir="."):
     print(f"  输出目录: {out_path}")
 
     # 预估请求数
-    estimated_requests = 13 if us_mode else 26
-    print(f"  [预估] 本次分析预计发送约 {estimated_requests} 次 API 请求（含行业对比数据）")
+    if us_mode:
+        estimated_requests = 9  # kline + quote(复用) + profile
+    else:
+        estimated_requests = 17 + 15  # 基础请求 + 同行资金流向(最多)
+    print(f"  [预估] 本次分析约 {estimated_requests} 次请求（基础 17 + 同行资金 15），约耗时 {estimated_requests * 3:.0f} 秒")
     print(f"  [限制] 每分钟 ≤12 次，会话上限 60 次，超过自动冷却")
+    if not us_mode:
+        print(f"  [优化] 北向资金和行业板块为市场级数据，会话内复用")
     print()
 
     print("[1/13] 获取 K 线数据...")
