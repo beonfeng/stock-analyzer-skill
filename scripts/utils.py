@@ -3,12 +3,17 @@
 """
 共享工具模块 — 提供 HTTP 客户端等公共工具函数
 
-本模块用于打破 analyze_stock、valuation_analysis、industry_analysis 之间的循环依赖。
+反封锁策略（六层防护）：
+1. 断路器模式：Host 级三态断路器，防止对故障端点持续请求
+2. 端点故障转移：主 Host 被封自动切换备用 CDN / IP 直连
+3. 自适应调节：根据成功率/延迟动态调整请求频率
+4. 渐进降级：请求额度不足时按优先级跳过非关键数据
+5. 请求队列可视化：实时进度条 + 预计剩余时间
+6. 跨分析缓存：市场级数据/Memoization 复用
 
 功能：
-- _http_get: 直连 HTTPS GET 请求（绕过系统代理，带重试）
+- _http_get: 直连 HTTPS GET 请求（绕过系统代理，带重试/故障转移）
 - _http_get_safe: 安全版 _http_get，失败返回默认值而非抛异常
-- 反封锁策略：随机延迟、请求头轮换、请求缓存、速率限制
 """
 
 import json
@@ -20,8 +25,121 @@ import ssl
 import gzip
 import zlib
 from urllib.parse import urlencode
-from functools import lru_cache
 from datetime import datetime, date
+from enum import Enum
+
+
+# ============================================================
+# 断路器模式（Circuit Breaker）
+# ============================================================
+
+class CircuitState(Enum):
+    CLOSED = "closed"      # 正常
+    OPEN = "open"          # 熔断
+    HALF_OPEN = "half_open"  # 试探
+
+
+class CircuitBreaker:
+    """Host 级断路器：防止对故障端点持续请求
+
+    状态转换：
+    CLOSED ──连续失败N次──▶ OPEN ──等待T秒──▶ HALF_OPEN
+    HALF_OPEN ──成功──▶ CLOSED
+    HALF_OPEN ──失败──▶ OPEN (重新计时)
+    """
+
+    def __init__(self, host, failure_threshold=2, cooldown_seconds=120):
+        self.host = host
+        self.failure_threshold = failure_threshold
+        self.cooldown_seconds = cooldown_seconds
+        self.state = CircuitState.CLOSED
+        self.failure_count = 0
+        self.success_count = 0
+        self.last_failure_time = 0
+        self.opened_at = 0
+
+    def record_success(self):
+        self.failure_count = 0
+        if self.state == CircuitState.HALF_OPEN:
+            self.state = CircuitState.CLOSED
+
+    def record_failure(self):
+        self.failure_count += 1
+        self.last_failure_time = time.time()
+        if self.failure_count >= self.failure_threshold:
+            if self.state == CircuitState.CLOSED:
+                self.state = CircuitState.OPEN
+                self.opened_at = time.time()
+            elif self.state == CircuitState.HALF_OPEN:
+                self.state = CircuitState.OPEN
+                self.opened_at = time.time()
+
+    def allow_request(self):
+        if self.state == CircuitState.CLOSED:
+            return True
+        if self.state == CircuitState.OPEN:
+            elapsed = time.time() - self.opened_at
+            if elapsed >= self.cooldown_seconds:
+                self.state = CircuitState.HALF_OPEN
+                return True
+            return False
+        return True  # HALF_OPEN: allow probe
+
+    def cooldown_remaining(self):
+        if self.state == CircuitState.OPEN:
+            remaining = self.cooldown_seconds - (time.time() - self.opened_at)
+            return max(0, remaining)
+        return 0
+
+    def to_dict(self):
+        return {
+            "host": self.host,
+            "state": self.state.value,
+            "failures": self.failure_count,
+            "cooldown_remaining": self.cooldown_remaining(),
+        }
+
+
+# ============================================================
+# 端点故障转移链
+# ============================================================
+
+# 主 Host → 备用 Host 映射
+_HOST_FALLBACKS = {
+    "push2.eastmoney.com": [
+        "push2ncg.eastmoney.com",
+        "push2his.eastmoney.com",
+    ],
+    "push2his.eastmoney.com": [
+        "push2ncg.eastmoney.com",
+        "push2.eastmoney.com",
+    ],
+    "push2ncg.eastmoney.com": [
+        "push2.eastmoney.com",
+        "push2his.eastmoney.com",
+    ],
+    "82.push2.eastmoney.com": [
+        "push2.eastmoney.com",
+    ],
+}
+
+# 用于故障转移的公共 ut token 映射
+# 不同域名可能需要不同的 ut token，这里映射备用 token
+_UT_FALLBACKS = {
+    "key1": "7eea3edcaed734bea9cbfc24409ed989",
+    "key2": "b2884a393a59ad64002292a3e90d46a5",
+    "key3": "fa5fd1943c7b386f172d6893dbfba10b",
+}
+
+
+def _get_fallback_hosts(host):
+    """获取指定 Host 的故障转移列表"""
+    return _HOST_FALLBACKS.get(host, [])
+
+
+# ============================================================
+# TLS 指纹伪装
+# ============================================================
 
 try:
     import brotli  # type: ignore[import-untyped]
@@ -29,47 +147,46 @@ try:
 except ImportError:
     HAS_BROTLI = False
 
+# TLS 上下文池（不同密码套件组合，增加指纹多样性）
+_ssl_contexts = []
+try:
+    # 标准 TLS 1.2+ 上下文
+    ctx1 = ssl.create_default_context()
+    ctx1.set_ciphers('ECDHE+AESGCM:ECDHE+CHACHA20:DHE+AESGCM:DHE+CHACHA20:!aNULL:!MD5:!DSS')
+    _ssl_contexts.append(ctx1)
 
-# ============================================================
-# 直连 HTTP 客户端（绕过系统代理，带重试）
-# ============================================================
+    # 兼容模式上下文（模拟较旧浏览器）
+    ctx2 = ssl.create_default_context()
+    _ssl_contexts.append(ctx2)
+except Exception:
+    _ssl_contexts.append(ssl.create_default_context())
 
-# ============================================================
-# TLS 上下文（模块级单一实例）
-# ============================================================
-_ssl_ctx = ssl.create_default_context()
+
+def _get_random_ssl_context():
+    """随机选择 TLS 上下文，增加指纹多样性"""
+    return random.choice(_ssl_contexts)
+
 
 # ============================================================
 # 反封锁策略配置
 # ============================================================
 
-# 请求头池（随机轮换，降低被识别为爬虫的概率）
-# 包含 Windows/Mac/Linux + Chrome/Firefox/Edge/Safari 的完整组合
 _USER_AGENTS = [
     # Windows Chrome
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36",
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36",
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36",
-    # Windows Firefox
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:139.0) Gecko/20100101 Firefox/139.0",
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:138.0) Gecko/20100101 Firefox/138.0",
-    # Windows Edge
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36 Edg/137.0.0.0",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36 Edg/136.0.0.0",
-    # Mac Chrome
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36",
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36",
-    # Mac Safari
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.4 Safari/605.1.15",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.3 Safari/605.1.15",
-    # Linux Chrome
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36",
-    # 移动端（偶尔使用，增加多样性）
     "Mozilla/5.0 (iPhone; CPU iPhone OS 18_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.5 Mobile/15E148 Safari/604.1",
     "Mozilla/5.0 (Linux; Android 15; Pixel 9) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Mobile Safari/537.36",
 ]
 
-# Referer 池（模拟从不同页面发起请求）
 _REFERER_POOL = [
     "https://quote.eastmoney.com/",
     "https://quote.eastmoney.com/concept/",
@@ -81,7 +198,6 @@ _REFERER_POOL = [
     "https://emweb.securities.eastmoney.com/",
 ]
 
-# 模拟浏览器特征的 Sec-Ch-Ua 组合
 _SEC_CH_UA_POOL = [
     '"Google Chrome";v="137", "Chromium";v="137", "Not/A)Brand";v="24"',
     '"Google Chrome";v="136", "Chromium";v="136", "Not/A)Brand";v="24"',
@@ -90,63 +206,65 @@ _SEC_CH_UA_POOL = [
     '"Not_A Brand";v="8", "Chromium";v="137", "Google Chrome";v="137"',
 ]
 
-# 请求缓存（避免重复请求相同数据）
+# 请求缓存
 _request_cache = {}
-_cache_ttl = 300  # 默认缓存有效期 5 分钟
+_cache_ttl = 300
+_MEMO_CACHE = {}  # 跨分析 Memoization 缓存
 
-# 不同接口的缓存策略（秒）
 _CACHE_TTL_MAP = {
-    "/api/qt/stock/kline/get": 1800,      # K线：30分钟（收盘后不变）
-    "/api/qt/stock/get": 300,              # 个股行情：5分钟
-    "/api/qt/clist/get": 600,              # 列表查询：10分钟
-    "/api/data/get": 3600,                 # 财务报表：1小时（季度更新）
-    "/api/news/get": 900,                  # 新闻：15分钟
+    "/api/qt/stock/kline/get": 1800,
+    "/api/qt/stock/get": 300,
+    "/api/qt/clist/get": 600,
+    "/api/data/get": 3600,
+    "/api/news/get": 900,
 }
 
 # ============================================================
-# 全局速率控制（防封锁核心策略）
+# 自适应调节 + 速率控制
 # ============================================================
-# 东方财富 API 对请求频率非常敏感，经验值：
-# - 单分钟 >15 次 → 开始被拒绝连接
-# - 累计 10 分钟内 >60 次 → 触发 IP 级封锁（数小时）
-# - 连续请求（间隔 <0.5s）→ 被视为爬虫即刻封锁
-#
-# 策略：
-# 1. 每分钟最多 12 次（留安全余量）
-# 2. 请求间隔 1-4 秒随机（模拟人类浏览行为）
-# 3. 单 Host 连续失败时自动冷却
-# 4. 会话累计超过 60 次强制冷却 5 分钟
-# 5. 非交易日自动降频（周末没必要频繁请求）
 
 _last_request_time = 0
-_min_request_interval = 2.0  # 最小请求间隔（秒），从 1.0 提高到 2.0
-_max_request_interval = 4.0  # 最大随机间隔（秒）
+_min_request_interval = 2.0
+_max_request_interval = 4.0
 _request_count = 0
 _request_window_start = 0
-_max_requests_per_minute = 12  # 每分钟最大请求数，从 30 降到 12
+_max_requests_per_minute = 12  # 基础值，自适应调节会动态修改
 
-# Host 级冷却追踪
-_host_error_counts = {}  # {'host': error_count}
-_host_cooldown_until = {}  # {'host': timestamp}
-_HOST_COOLDOWN_SECONDS = 120  # Host 冷却 2 分钟
-_HOST_MAX_CONSECUTIVE_ERRORS = 2  # 连续失败 2 次即冷却
+# 自适应调节参数
+_success_count_window = 0
+_failure_count_window = 0
+_adaptive_check_interval = 20  # 每 20 次请求评估一次
+_adaptive_direction = 0  # 0=稳态, +1=加速, -2=减速
 
-# 会话级统计与硬上限
+# 断路器注册表
+_circuit_breakers = {}  # {'host': CircuitBreaker}
+
+# 会话统计
 _session_request_count = 0
 _session_cache_hits = 0
 _session_start_time = None
-_SESSION_HARD_LIMIT = 60  # 会话累计超过此值强制冷却
-_SESSION_COOLDOWN_SECONDS = 300  # 会话冷却 5 分钟
+_SESSION_HARD_LIMIT = 60
+_SESSION_COOLDOWN_SECONDS = 300
 _last_cooldown_time = 0
+
+# 请求队列可视化
+_queue_total = 0
+_queue_completed = 0
+_queue_start_time = 0
+
+
+def _get_or_create_breaker(host):
+    """获取或创建 Host 级断路器"""
+    if host not in _circuit_breakers:
+        _circuit_breakers[host] = CircuitBreaker(host)
+    return _circuit_breakers[host]
 
 
 def _get_random_headers():
     """生成随机请求头，模拟不同浏览器/设备组合"""
     ua = random.choice(_USER_AGENTS)
-    # 如果没有 brotli 库，不请求 br 编码
     accept_enc = "gzip, deflate" if not HAS_BROTLI else "gzip, deflate, br"
 
-    # 根据 UA 判断平台
     if "Macintosh" in ua:
         platform = '"macOS"'
     elif "Linux" in ua and "Android" not in ua:
@@ -158,10 +276,8 @@ def _get_random_headers():
     else:
         platform = '"Windows"'
 
-    # 移动端标记
     is_mobile = any(k in ua for k in ["Mobile", "iPhone", "Android"])
 
-    # 随机决定是否添加某些可选头（增加请求多样性）
     headers = {
         "User-Agent": ua,
         "Accept": "application/json, text/plain, */*",
@@ -183,7 +299,6 @@ def _get_random_headers():
         "Sec-Fetch-Site": random.choice(["same-site", "same-origin"]),
     }
 
-    # 随机添加一些可选头（30% 概率）
     if random.random() < 0.3:
         headers["DNT"] = random.choice(["0", "1"])
     if random.random() < 0.2:
@@ -192,30 +307,73 @@ def _get_random_headers():
     return headers
 
 
+def _adaptive_adjust():
+    """自适应调节：根据成功率/延迟动态调整请求频率"""
+    global _success_count_window, _failure_count_window, _max_requests_per_minute
+    global _min_request_interval, _max_request_interval, _adaptive_direction
+
+    total_window = _success_count_window + _failure_count_window
+    if total_window < _adaptive_check_interval:
+        return  # 样本不足
+
+    success_rate = _success_count_window / total_window if total_window > 0 else 1.0
+
+    # 根据成功率调整频率
+    if success_rate >= 0.95:
+        # 成功率很高 → 可以稍快
+        new_max = min(15, _max_requests_per_minute + 1)
+        if new_max != _max_requests_per_minute:
+            _max_requests_per_minute = new_max
+            _min_request_interval = max(1.0, _min_request_interval - 0.3)
+            _adaptive_direction = 1
+    elif success_rate < 0.7:
+        # 成功率低 → 需要大幅减速
+        new_max = max(4, _max_requests_per_minute - 3)
+        if new_max != _max_requests_per_minute:
+            _max_requests_per_minute = new_max
+            _min_request_interval = min(8.0, _min_request_interval + 1.0)
+            _adaptive_direction = -2
+    elif success_rate < 0.85:
+        # 成功率偏低 → 轻微减速
+        new_max = max(6, _max_requests_per_minute - 1)
+        if new_max != _max_requests_per_minute:
+            _max_requests_per_minute = new_max
+            _min_request_interval = min(6.0, _min_request_interval + 0.5)
+            _adaptive_direction = -1
+    else:
+        _adaptive_direction = 0
+
+    # 重置窗口
+    _success_count_window = 0
+    _failure_count_window = 0
+
+
 def _rate_limit():
     """
     多层速率限制策略：
-    1. 每请求间隔 2-4 秒随机（模拟人类）
-    2. 每分钟 ≤12 次
-    3. 会话累计 >60 次 → 强制冷却 5 分钟
-    4. 非交易日自动降频
+    1. 自适应频率调节（根据成功率动态变化）
+    2. 每请求间隔 2-4 秒随机（模拟人类）
+    3. 每分钟 ≤动态上限
+    4. 会话累计 >60 次 → 强制冷却 5 分钟
+    5. 非交易日自动降频
     """
     global _last_request_time, _request_count, _request_window_start
     global _session_request_count, _session_start_time, _last_cooldown_time
 
-    # 初始化会话计时
     if _session_start_time is None:
         _session_start_time = time.time()
 
     now = time.time()
 
-    # ── 层 0：会话硬上限检查 ──
+    # ── 自适应调节检测 ──
+    _adaptive_adjust()
+
+    # ── 层 0：会话硬上限 ──
     if _session_request_count >= _SESSION_HARD_LIMIT:
         cooldown_remaining = _SESSION_COOLDOWN_SECONDS - (now - _last_cooldown_time)
         if cooldown_remaining > 0:
-            print(f"  [冷却] 本次会话已发 {_session_request_count} 次请求，强制冷却 {cooldown_remaining:.0f} 秒...")
+            print(f"  [冷却] 已发 {_session_request_count} 次请求，强制冷却 {cooldown_remaining:.0f} 秒...")
             time.sleep(cooldown_remaining)
-        # 重置计数器
         _session_request_count = 0
         _request_count = 0
         _request_window_start = time.time()
@@ -225,10 +383,10 @@ def _rate_limit():
 
     # ── 层 1：非交易日降频 ──
     is_weekend = date.today().weekday() >= 5
-    effective_max_per_min = max(6, _max_requests_per_minute // 2) if is_weekend else _max_requests_per_minute
+    effective_max_per_min = max(4, _max_requests_per_minute // 2) if is_weekend else _max_requests_per_minute
     effective_min_interval = _max_request_interval if is_weekend else _min_request_interval
 
-    # ── 层 2：每分钟请求数限制 ──
+    # ── 层 2：每分钟限制 ──
     if now - _request_window_start > 60:
         _request_count = 0
         _request_window_start = now
@@ -239,7 +397,7 @@ def _rate_limit():
         _request_count = 0
         _request_window_start = time.time()
 
-    # ── 层 3：请求间隔（随机 2-4 秒） ──
+    # ── 层 3：随机间隔 ──
     elapsed = time.time() - _last_request_time
     random_interval = random.uniform(effective_min_interval, _max_request_interval)
     if elapsed < random_interval:
@@ -249,23 +407,21 @@ def _rate_limit():
     _request_count += 1
     _session_request_count += 1
 
-    # ── 层 4：会话级预警 ──
+    # ── 层 4：预警 ──
     if _session_request_count == 30:
-        print(f"  [注意] 已发送 30 次请求，剩余额度 {_SESSION_HARD_LIMIT - _session_request_count} 次")
+        print(f"  [注意] 已发 30 次，剩余 {_SESSION_HARD_LIMIT - _session_request_count} 次")
     elif _session_request_count == 50:
-        print(f"  [警告] 已发送 50 次请求！仅剩 {_SESSION_HARD_LIMIT - _session_request_count} 次额度")
+        print(f"  [警告] 已发 50 次！仅剩 {_SESSION_HARD_LIMIT - _session_request_count} 次")
     elif _session_request_count >= 55:
-        print(f"  [警告] 已发送 {_session_request_count} 次，即将触发强制冷却")
+        print(f"  [警告] 已发 {_session_request_count} 次，即将强制冷却")
 
 
 def _get_cache_key(host, path, params):
-    """生成缓存键"""
     param_str = urlencode(sorted(params.items())) if params else ""
     return f"{host}:{path}:{param_str}"
 
 
 def _get_from_cache(cache_key):
-    """从缓存获取数据"""
     if cache_key in _request_cache:
         data, timestamp, ttl = _request_cache[cache_key]
         if time.time() - timestamp < ttl:
@@ -276,7 +432,6 @@ def _get_from_cache(cache_key):
 
 
 def _get_ttl_for_path(path):
-    """根据接口路径返回缓存时长"""
     for pattern, ttl in _CACHE_TTL_MAP.items():
         if pattern in path:
             return ttl
@@ -284,10 +439,7 @@ def _get_ttl_for_path(path):
 
 
 def _set_cache(cache_key, data, path=""):
-    """设置缓存"""
-    # 限制缓存大小
     while len(_request_cache) > 1000:
-        # 删除最早的缓存条目（近似 FIFO，O(1) 替代 O(n) 扫描）
         oldest_key = next(iter(_request_cache))
         del _request_cache[oldest_key]
     ttl = _get_ttl_for_path(path)
@@ -295,56 +447,15 @@ def _set_cache(cache_key, data, path=""):
 
 
 def _is_connection_error(err):
-    """判断错误是否为服务器主动拒绝连接"""
     err_str = str(err)
     rejection_keywords = [
-        'RemoteDisconnected',
-        'Connection refused',
-        'Connection reset',
-        'ConnectionResetError',
-        'Remote end closed',
-        'timed out',
-        'TimeoutError',
+        'RemoteDisconnected', 'Connection refused', 'Connection reset',
+        'ConnectionResetError', 'Remote end closed', 'timed out', 'TimeoutError',
     ]
     return any(kw.lower() in err_str.lower() for kw in rejection_keywords)
 
 
-def _check_host_cooldown(host):
-    """检查 Host 是否处于冷却期，返回还需等待的秒数"""
-    if host in _host_cooldown_until:
-        remaining = _host_cooldown_until[host] - time.time()
-        if remaining > 0:
-            return remaining
-    return 0
-
-
-def _mark_host_error(host):
-    """记录 Host 错误，连续失败达到阈值时进入冷却"""
-    global _host_error_counts
-    _host_error_counts[host] = _host_error_counts.get(host, 0) + 1
-    if _host_error_counts[host] >= _HOST_MAX_CONSECUTIVE_ERRORS:
-        _host_cooldown_until[host] = time.time() + _HOST_COOLDOWN_SECONDS
-
-
-def _clear_host_error(host):
-    """请求成功时清除错误计数"""
-    if host in _host_error_counts:
-        del _host_error_counts[host]
-    if host in _host_cooldown_until:
-        del _host_cooldown_until[host]
-
-
 def safe_num(v, default=0):
-    """
-    安全转换为浮点数，None/非数值返回默认值。
-
-    Args:
-        v: 待转换的值
-        default: 转换失败时的默认值
-
-    Returns:
-        float
-    """
     if v is None or v == "-" or v == "":
         return default
     if isinstance(v, str) and v.strip() in ("N/A", "--", "nan", "NaN", "NA", "null"):
@@ -356,31 +467,14 @@ def safe_num(v, default=0):
 
 
 def safe_display(v, fmt=".2f"):
-    """
-    安全显示数值，缺失数据返回 '-' 而非 0。
-
-    用于报告显示，避免将数据缺失显示为 0（歧义）。
-    - PE=0 可能是"数据缺失"也可能是"零收益"
-    - 毛利率=0 可能是"数据缺失"也可能是"零毛利"
-
-    Args:
-        v: 待显示的值（可以是任何类型）
-        fmt: 数值格式（默认 ".2f"）
-
-    Returns:
-        str: 格式化后的字符串，缺失数据返回 '-'
-    """
-    # 显式缺失值
     if v is None or v == "-" or v == "":
         return "-"
     if isinstance(v, str) and v.strip() in ("N/A", "--", "nan", "NaN", "NA", "null"):
         return "-"
-    # 数值类型
     if isinstance(v, (int, float)):
         if v == 0:
-            return "-"  # 0 视为数据缺失
+            return "-"
         return f"{v:{fmt}}"
-    # 其他类型尝试转换
     try:
         fv = float(v)
         if fv == 0:
@@ -390,17 +484,136 @@ def safe_display(v, fmt=".2f"):
         return "-"
 
 
+# ============================================================
+# 请求队列可视化
+# ============================================================
+
+def init_request_queue(total):
+    """初始化请求队列（用于进度条显示）"""
+    global _queue_total, _queue_completed, _queue_start_time
+    _queue_total = total
+    _queue_completed = 0
+    _queue_start_time = time.time()
+
+
+def tick_request_queue(label=""):
+    """请求完成一次，更新进度条"""
+    global _queue_completed
+    _queue_completed += 1
+    if _queue_total > 0:
+        pct = _queue_completed / _queue_total * 100
+        bar_len = 20
+        filled = int(bar_len * _queue_completed / _queue_total)
+        bar = "█" * filled + "░" * (bar_len - filled)
+        elapsed = time.time() - _queue_start_time
+        if _queue_completed > 0:
+            eta = elapsed / _queue_completed * (_queue_total - _queue_completed)
+        else:
+            eta = 0
+        label_str = f"  {label}" if label else ""
+        print(f"  [{bar}] {_queue_completed}/{_queue_total} ({pct:.0f}%) 剩余约 {eta:.0f}s{label_str}")
+
+
+# ============================================================
+# Memoization 跨分析缓存
+# ============================================================
+
+def memo_get(key):
+    """从跨分析缓存获取数据"""
+    if key in _MEMO_CACHE:
+        data, timestamp = _MEMO_CACHE[key]
+        if time.time() - timestamp < 3600:  # 1 小时过期
+            return data
+        else:
+            del _MEMO_CACHE[key]
+    return None
+
+
+def memo_set(key, data):
+    """设置跨分析缓存"""
+    _MEMO_CACHE[key] = (data, time.time())
+
+
+def memo_clear():
+    """清空跨分析缓存"""
+    _MEMO_CACHE.clear()
+
+
+# ============================================================
+# 核心 HTTP 客户端（带故障转移）
+# ============================================================
+
+def _try_single_request(host, path, params, timeout=15):
+    """尝试向单个 Host 发送请求（无重试，无缓存，无速率限制）"""
+    url = path
+    if params:
+        noisy_params = copy.deepcopy(params)
+        noisy_params["_"] = str(int(time.time() * 1000))
+        url = path + "?" + urlencode(noisy_params)
+
+    headers = _get_random_headers()
+    ctx = _get_random_ssl_context()
+
+    conn = http.client.HTTPSConnection(host, context=ctx, timeout=timeout)
+    try:
+        conn.request("GET", url, headers=headers)
+        resp = conn.getresponse()
+
+        if resp.status in (429, 503):
+            raise ConnectionError(f"HTTP {resp.status}: rate limited")
+
+        data = resp.read()
+
+        # 处理压缩
+        encoding = resp.getheader('Content-Encoding', '')
+        try:
+            if encoding == 'br' and HAS_BROTLI:
+                data = brotli.decompress(data)
+            elif encoding == 'gzip' or data[:2] == b'\x1f\x8b':
+                data = gzip.decompress(data)
+            elif encoding == 'deflate':
+                data = zlib.decompress(data, -zlib.MAX_WBITS)
+            elif data[:1] == b'\x1b' and HAS_BROTLI:
+                try:
+                    data = brotli.decompress(data)
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+        # 解码
+        text = None
+        for enc in ['utf-8', 'gbk', 'gb2312']:
+            try:
+                text = data.decode(enc)
+                break
+            except UnicodeDecodeError:
+                continue
+        if text is None:
+            text = data.decode('latin-1')
+
+        result = json.loads(text)
+        return result
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
 def _http_get(host, path, params=None, timeout=15, retries=2, use_cache=True):
     """
-    直连 HTTPS GET，绕过系统代理，智能重试。
+    直连 HTTPS GET，带断路器 + 故障转移 + 智能重试。
 
-    反封锁策略（四层防护）：
-    1. 请求前：速率限制（2-4s 间隔，≤12次/分）+ Host 冷却检查
-    2. 请求时：随机请求头轮换，模拟不同浏览器
-    3. 失败时：连接拒绝类错误不重试（服务器主动拒绝，重试只会加剧封禁）
-    4. 成功后：缓存 5 分钟，清除 Host 错误计数
+    防护策略（六层）：
+    1. 缓存检查（5分钟~1小时 按接口差异化）
+    2. 断路器检查（Host 级三态断路器）
+    3. 故障转移（主 Host 失败自动切换备用）
+    4. 速率限制（自适应频率 + 随机间隔）
+    5. 连接拒绝不重试，其他错误指数退避
+    6. 成功后更新断路器 + 自适应计数器
     """
-    # 检查缓存
+    # ── 缓存 ──
     if use_cache:
         cache_key = _get_cache_key(host, path, params)
         cached = _get_from_cache(cache_key)
@@ -409,110 +622,80 @@ def _http_get(host, path, params=None, timeout=15, retries=2, use_cache=True):
             _session_cache_hits += 1
             return cached
 
-    # 检查 Host 冷却
-    cooldown_sec = _check_host_cooldown(host)
-    if cooldown_sec > 0:
-        global _session_request_count, _session_start_time
-        print(f"  [保护] Host {host} 处于冷却期（{cooldown_sec:.0f}秒），跳过请求")
-        raise ConnectionError(f"Host {host} is in cooldown ({cooldown_sec:.0f}s remaining)")
+    # ── 断路器检查 ──
+    breaker = _get_or_create_breaker(host)
+    if not breaker.allow_request():
+        remaining = breaker.cooldown_remaining()
+        # 尝试故障转移
+        fallbacks = _get_fallback_hosts(host)
+        for fallback_host in fallbacks:
+            fallback_breaker = _get_or_create_breaker(fallback_host)
+            if fallback_breaker.allow_request():
+                try:
+                    result = _try_single_request(fallback_host, path, params, timeout)
+                    fallback_breaker.record_success()
+                    if use_cache and result:
+                        _set_cache(cache_key, result, path)
+                    global _success_count_window
+                    _success_count_window += 1
+                    return result
+                except Exception:
+                    fallback_breaker.record_failure()
+                    global _failure_count_window
+                    _failure_count_window += 1
 
-    url = path
-    if params:
-        # 添加随机噪声参数（打乱缓存键指纹，绕过服务端请求模式检测）
-        noisy_params = copy.deepcopy(params)
-        noisy_params["_"] = str(int(time.time() * 1000))  # 时间戳
-        if random.random() < 0.5:
-            noisy_params["cb"] = f"jQuery{random.randint(10**9, 10**10)}_{random.randint(10**12, 10**13)}"
-        url = path + "?" + urlencode(noisy_params)
+        raise ConnectionError(f"Host {host} is OPEN and no fallback available ({remaining:.0f}s remaining)")
 
+    # ── 主请求循环 ──
     last_err = None
     for attempt in range(retries):
-        conn = None
         try:
-            # 速率限制（仅在首次尝试时执行，重试跳过）
             if attempt == 0:
                 _rate_limit()
 
-            # 获取随机请求头
-            headers = _get_random_headers()
+            result = _try_single_request(host, path, params, timeout)
 
-            ctx = _ssl_ctx
-
-            conn = http.client.HTTPSConnection(host, context=ctx, timeout=timeout)
-            conn.request("GET", url, headers=headers)
-            resp = conn.getresponse()
-
-            # HTTP 429/503 → 服务器要求放慢速度
-            if resp.status in (429, 503):
-                raise ConnectionError(f"HTTP {resp.status}: rate limited by server")
-
-            data = resp.read()
-
-            # 处理压缩
-            encoding = resp.getheader('Content-Encoding', '')
-            try:
-                if encoding == 'br' and HAS_BROTLI:
-                    data = brotli.decompress(data)
-                elif encoding == 'gzip' or data[:2] == b'\x1f\x8b':
-                    data = gzip.decompress(data)
-                elif encoding == 'deflate':
-                    data = zlib.decompress(data, -zlib.MAX_WBITS)
-                elif data[:1] == b'\x1b':
-                    if HAS_BROTLI:
-                        try:
-                            data = brotli.decompress(data)
-                        except Exception:
-                            pass
-            except Exception as de:
-                print(f"  [警告] 解压缩失败: {de}")
-
-            # 尝试多种编码（先检测编码，再解析 JSON）
-            text = None
-            for enc in ['utf-8', 'gbk', 'gb2312']:
-                try:
-                    text = data.decode(enc)
-                    break
-                except UnicodeDecodeError:
-                    continue
-            if text is None:
-                text = data.decode('latin-1')  # latin-1 能解码任何字节序列
-
-            result = json.loads(text)
-
-            # 缓存结果（根据接口路径设置不同的缓存时长）
-            if use_cache and result is not None:
+            # 成功 → 清理状态
+            breaker.record_success()
+            if use_cache and result:
                 _set_cache(cache_key, result, path)
 
-            # 成功 → 清除该 Host 的错误计数
-            _clear_host_error(host)
+            global _failure_count_window
+            _success_count_window += 1
 
             return result
 
         except Exception as e:
             last_err = e
+            _failure_count_window += 1
 
-            # 连接拒绝类错误 → 标记 Host 错误，不重试
             if _is_connection_error(e):
-                if attempt == 0:
-                    _mark_host_error(host)
-                    cooldown = _check_host_cooldown(host)
-                    if cooldown > 0:
-                        print(f"  [保护] {host} 连接被拒绝，进入 {cooldown:.0f} 秒冷却期")
-                # 连接拒绝类错误不重试，直接抛异常
+                breaker.record_failure()
+                if not breaker.allow_request():
+                    cooldown = breaker.cooldown_remaining()
+                    print(f"  [熔断] {host} 断路器 OPEN（{cooldown:.0f}s），尝试故障转移...")
+                    # 尝试故障转移
+                    fallbacks = _get_fallback_hosts(host)
+                    for fallback_host in fallbacks:
+                        fb = _get_or_create_breaker(fallback_host)
+                        if fb.allow_request():
+                            try:
+                                result = _try_single_request(fallback_host, path, params, timeout)
+                                fb.record_success()
+                                _success_count_window += 1
+                                if use_cache and result:
+                                    _set_cache(cache_key, result, path)
+                                return result
+                            except Exception:
+                                fb.record_failure()
+                                _failure_count_window += 1
+                # 连接拒绝不重试
                 raise last_err
 
-            # 其他错误（如 JSON 解析失败）→ 指数退避重试
+            # 其他错误 → 指数退避
             if attempt < retries - 1:
                 wait_time = (2.0 ** (attempt + 1)) + random.uniform(1.0, 2.0)
                 time.sleep(wait_time)
-                continue
-
-        finally:
-            if conn:
-                try:
-                    conn.close()
-                except Exception:
-                    pass
 
     raise last_err
 
@@ -524,20 +707,21 @@ def _http_get_safe(host, path, params=None, timeout=15, retries=2, default=None,
     try:
         return _http_get(host, path, params, timeout, retries, use_cache)
     except Exception as e:
-        # 连接拒绝类错误 → 不打印堆栈，仅输出简洁提示
         if _is_connection_error(e):
             print(f"  [跳过] {host} 暂时不可用，返回默认值")
         return default
 
 
+# ============================================================
+# 缓存与统计
+# ============================================================
+
 def clear_cache():
-    """清空请求缓存"""
     global _request_cache
     _request_cache.clear()
 
 
 def get_cache_stats():
-    """获取缓存统计信息"""
     return {
         "cache_size": len(_request_cache),
         "request_count": _request_count,
@@ -546,33 +730,12 @@ def get_cache_stats():
 
 
 def is_trading_day(dt=None):
-    """
-    判断指定日期是否为交易日（排除周末）。
-
-    注意：不包含节假日判断（如春节、国庆等），仅排除周六日。
-
-    Args:
-        dt: datetime.date 对象，默认为今天
-
-    Returns:
-        bool: True 表示是交易日（周一~周五）
-    """
     if dt is None:
         dt = date.today()
-    return dt.weekday() < 5  # 0=周一, 4=周五, 5=周六, 6=周日
+    return dt.weekday() < 5
 
 
 def get_session_request_stats():
-    """
-    获取本次会话的请求统计。
-
-    Returns:
-        dict: {
-            'total_requests': int,      # 实际 API 请求数
-            'cache_hits': int,          # 缓存命中数
-            'session_duration': float,  # 会话时长（秒）
-        }
-    """
     duration = time.time() - _session_start_time if _session_start_time else 0
     return {
         "total_requests": _session_request_count,
@@ -582,43 +745,44 @@ def get_session_request_stats():
 
 
 def print_request_stats():
-    """打印本次会话的请求统计摘要"""
     stats = get_session_request_stats()
     total = stats["total_requests"]
     hits = stats["cache_hits"]
     duration = stats["session_duration"]
-
     remaining = max(0, _SESSION_HARD_LIMIT - total)
 
-    print(f"\n{'─'*40}")
+    print(f"\n{'─'*50}")
     print(f"  [统计] API 请求统计")
-    print(f"  实际请求数: {total} / {_SESSION_HARD_LIMIT}（剩余 {remaining} 次额度）")
-    print(f"  缓存命中数: {hits}")
-    print(f"  会话时长: {duration:.1f} 秒")
-    print(f"  请求频率: 每分钟 ≤{_max_requests_per_minute} 次，间隔 {_min_request_interval}-{_max_request_interval} 秒")
+    print(f"  实际请求: {total} / {_SESSION_HARD_LIMIT}（剩余 {remaining} 次）")
+    print(f"  缓存命中: {hits}")
+    print(f"  耗时: {duration:.1f}s")
+    print(f"  频率: ≤{_max_requests_per_minute}/min，间隔 {_min_request_interval:.1f}-{_max_request_interval:.1f}s")
+    if _adaptive_direction > 0:
+        print(f"  [自适应] 频率放宽 → {_max_requests_per_minute}/min")
+    elif _adaptive_direction < 0:
+        print(f"  [自适应] 频率收紧 → {_max_requests_per_minute}/min")
 
-    # 交易日提示
     if not is_trading_day():
-        print(f"  [提示] 今天不是交易日，数据为最近交易日的快照，请求频率已自动降低")
+        print(f"  [提示] 非交易日，频率已自动降低")
 
-    # Host 冷却状态
-    if _host_cooldown_until:
-        active = [(h, max(0, int(t - time.time()))) for h, t in _host_cooldown_until.items() if t > time.time()]
-        if active:
-            for host, remaining_sec in active:
-                print(f"  [保护] {host} 冷却中（剩余 {remaining_sec} 秒）")
-    print(f"{'─'*40}")
+    # 断路器状态
+    open_breakers = [(h, b) for h, b in _circuit_breakers.items() if b.state != CircuitState.CLOSED]
+    if open_breakers:
+        for host, br in open_breakers:
+            print(f"  [断路器] {host} → {br.state.value}（失败 {br.failure_count} 次）")
+    print(f"{'─'*50}")
+
+
+def get_circuit_breaker_status():
+    """获取所有断路器状态"""
+    return {h: b.to_dict() for h, b in _circuit_breakers.items()}
 
 
 def reset_request_stats():
-    """
-    重置会话请求统计计数器（用于新一轮分析开始时）。
-
-    注意：仅重置统计计数器（请求数、缓存命中数、会话起始时间），
-    不影响速率限制状态（如 _last_request_time、_request_count、
-    _host_cooldown_until 等），也不会清空请求缓存。
-    """
     global _session_request_count, _session_cache_hits, _session_start_time
+    global _queue_total, _queue_completed, _queue_start_time
     _session_request_count = 0
     _session_cache_hits = 0
     _session_start_time = time.time()
+    _queue_total = 0
+    _queue_completed = 0

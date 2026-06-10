@@ -14,7 +14,10 @@ import pandas as pd
 import numpy as np
 
 from .market_utils import get_market_info, convert_price, is_us_stock, get_secid
-from .utils import _http_get, _http_get_safe, safe_num, safe_display, is_trading_day, print_request_stats, reset_request_stats
+from .utils import (_http_get, _http_get_safe, safe_num, safe_display,
+    is_trading_day, print_request_stats, reset_request_stats,
+    init_request_queue, tick_request_queue,
+    memo_get, memo_set, get_session_request_stats)
 from .technical_indicators import calculate_extended_indicators
 from .valuation_analysis import analyze_valuation_percentile
 from .industry_analysis import analyze_industry_comparison
@@ -190,18 +193,11 @@ def fetch_fund_flow(code):
     return result
 
 
-# 会话级缓存：北向资金和行业板块是非个股数据，整个会话复用一次即可
-_north_flow_cache = None
-_industry_boards_cache = None
-_session_cache_timestamp = 0
-_SESSION_CACHE_TTL = 600  # 会话缓存 10 分钟
-
-
 def fetch_north_flow():
-    """获取北向资金数据（会话级缓存：非个股数据，不同股票分析复用）"""
-    global _north_flow_cache
-    if _north_flow_cache is not None:
-        return _north_flow_cache
+    """获取北向资金数据（Memoization 跨分析缓存：市场级数据复用）"""
+    cached = memo_get("north_flow")
+    if cached is not None:
+        return cached
 
     result = {}
     # 北向资金使用专用的净买入数据接口
@@ -225,7 +221,7 @@ def fetch_north_flow():
             result[symbol] = pd.DataFrame(rows)
         except Exception as e:
             print(f"  [警告] 北向资金({symbol})获取失败: {e}")
-    _north_flow_cache = result
+    memo_set("north_flow", result)
     return result
 
 
@@ -291,10 +287,10 @@ def fetch_stock_news(code):
 
 
 def fetch_industry_boards():
-    """获取行业板块数据（会话级缓存：非个股数据，不同股票分析复用）"""
-    global _industry_boards_cache
-    if _industry_boards_cache is not None:
-        return _industry_boards_cache
+    """获取行业板块数据（Memoization 跨分析缓存：市场级数据复用）"""
+    cached = memo_get("industry_boards")
+    if cached is not None:
+        return cached
 
     params = {
         "pn": "1", "pz": "50", "po": "1", "np": "1",
@@ -315,8 +311,9 @@ def fetch_industry_boards():
             "上涨家数": item.get("f104", 0),
             "下跌家数": item.get("f105", 0),
         })
-    _industry_boards_cache = pd.DataFrame(rows)
-    return _industry_boards_cache
+    result = pd.DataFrame(rows)
+    memo_set("industry_boards", result)
+    return result
 
 
 def fetch_financial_report(code):
@@ -1865,6 +1862,10 @@ def generate_report(code, name, df, indicators, fund_flow, north_flow, quote, ne
 # 主流程
 # ============================================================
 
+# 分析间冷却计时器
+_last_analysis_time = 0.0
+
+
 def analyze_stock(code, output_dir="."):
     # 分析间冷却保护：连续调用时强制间隔
     global _last_analysis_time
@@ -1898,125 +1899,113 @@ def analyze_stock(code, output_dir="."):
     out_path.mkdir(parents=True, exist_ok=True)
     print(f"  输出目录: {out_path}")
 
-    # 预估请求数
-    if us_mode:
-        estimated_requests = 9  # kline + quote(复用) + profile
-    else:
-        estimated_requests = 17 + 15  # 基础请求 + 同行资金流向(最多)
-    print(f"  [预估] 本次分析约 {estimated_requests} 次请求（基础 17 + 同行资金 15），约耗时 {estimated_requests * 3:.0f} 秒")
-    print(f"  [限制] 每分钟 ≤12 次，会话上限 60 次，超过自动冷却")
-    if not us_mode:
-        print(f"  [优化] 北向资金和行业板块为市场级数据，会话内复用")
-    print()
+    # ── 冷启动预热：预加载市场级数据 ──
+    print("  [预热] 预加载市场级数据...")
+    try:
+        fetch_industry_boards()
+        fetch_north_flow()
+        print("  [预热] 完成（后续分析复用缓存，零额外请求）")
+    except Exception:
+        pass
 
-    print("[1/13] 获取 K 线数据...")
+    # ── 渐进降级：根据请求预算决定数据层级 ──
+    stats = get_session_request_stats()
+    available = 60 - stats["total_requests"]
+    # Tier 4 (奢侈): 同行资金流向 — 需要 >25 次额度
+    # Tier 3 (可选): 行业对比 — 需要 >15 次额度
+    # Tier 2 (重要): 所有默认数据 — 需要 >10 次额度
+    # Tier 1 (必须): K线 + 行情 + 财务 + 公司概况
+    current_tier = 4 if available > 25 else (3 if available > 15 else (2 if available > 10 else 1))
+    if current_tier < 4:
+        print(f"  [降级] 可用请求额度仅 {available} 次，自动降级到 Tier {current_tier}")
+
+    # ── 进度条初始化 ──
+    total_steps = 9 if us_mode else (13 + (3 if current_tier >= 3 else 0))
+    init_request_queue(total_steps)
+    tick_request_queue("开始分析")
+
+    print()
+    print("[1] 获取 K 线数据...")
     df_hist = fetch_kline(code, days=500)
     if df_hist.empty:
         raise ValueError(f"无法获取 {code} 的 K 线数据，请检查股票代码是否正确或稍后重试")
     print(f"  获取到 {len(df_hist)} 条 K 线数据")
+    tick_request_queue("K线")
 
-    print("[2/13] 获取实时行情... [复用已有数据，无额外请求]")
+    print("[2] 获取实时行情... [复用已有数据，无额外请求]")
+    tick_request_queue("行情")
 
     if us_mode:
-        # 美股：跳过东方财富专属数据
-        print("[3/13] 资金流向... [N/A 美股不适用]")
-        fund_flow = {}
-
-        print("[4/13] 北向资金... [N/A 美股不适用]")
-        north_flow = {}
-
-        print("[5/13] 新闻和行业数据... [N/A 美股不适用]")
-        news_df = pd.DataFrame()
-        industry_df = pd.DataFrame()
-
-        print("[6/13] 财务报表... [使用东方财富行情数据]")
-        financial_data = {}
+        fund_flow, north_flow, news_df, industry_df, financial_data = {}, {}, pd.DataFrame(), pd.DataFrame(), {}
+        tick_request_queue("跳过美股专属")
     else:
-        print("[3/13] 获取资金流向...")
+        print("[3] 获取资金流向...")
         fund_flow = fetch_fund_flow(code)
+        tick_request_queue("资金流向")
 
-        print("[4/13] 获取北向资金...")
+        print("[4] 获取北向资金... [Memo 跨分析缓存]")
         north_flow = fetch_north_flow()
+        tick_request_queue("北向")
 
-        print("[5/13] 获取新闻和行业数据...")
+        print("[5] 获取新闻和行业数据...")
         news_df = fetch_stock_news(code)
         industry_df = fetch_industry_boards()
+        tick_request_queue("新闻+行业")
 
-        print("[6/13] 获取财务报表数据...")
+        print("[6] 获取财务报表数据...")
         financial_data = fetch_financial_report(code)
+        tick_request_queue("财务")
 
-    print("[7/13] 获取公司概况...")
+    print("[7] 获取公司概况...")
     company_profile = fetch_company_profile(code)
+    tick_request_queue("公司概况")
 
-    print("[8/13] 计算技术指标...")
+    print("[8] 计算技术指标...")
     indicators = calculate_indicators(df_hist)
-
-    # 计算扩展技术指标
-    print("  计算扩展指标（RSI 背离、MACD 柱状图等）...")
     extended_indicators = calculate_extended_indicators(df_hist, indicators)
+    tick_request_queue("技术指标")
 
-    print("[9/13] 计算加权信号评分...")
+    print("[9] 计算评分和风控...")
     weighted_score = calculate_weighted_score(indicators)
-
-    print("[10/13] 计算动态止损/目标位...")
     price = indicators.get("最新价", 0)
-    # 美股使用 main 板型（无涨跌幅限制，但计算逻辑兼容）
     board_type = "main" if us_mode else detect_board_type(code)
-    stop_loss = calc_dynamic_stop_loss(
-        current_price=price,
-        atr=indicators.get("ATR14", 0),
-        board_type=board_type
-    )
-    target = calc_target_price(
-        current_price=price,
-        stop_loss=stop_loss["stop_loss"]
-    )
-
-    print("[11/13] 计算支撑压力位...")
+    stop_loss = calc_dynamic_stop_loss(current_price=price, atr=indicators.get("ATR14", 0), board_type=board_type)
+    target = calc_target_price(current_price=price, stop_loss=stop_loss["stop_loss"])
     support_resistance = calc_support_resistance(df_hist, price, indicators)
-
-    print("[12/13] 计算仓位建议和风控检查...")
-    position = calc_position_size(
-        direction=weighted_score["direction"],
-        score=weighted_score["score"],
-        net_signals=weighted_score["net_signals"],
-        has_bearish=weighted_score["bearish_signals"] > 0
-    )
-    # 根据股票名称判断是否为 ST 股票
+    position = calc_position_size(direction=weighted_score["direction"], score=weighted_score["score"],
+                                   net_signals=weighted_score["net_signals"],
+                                   has_bearish=weighted_score["bearish_signals"] > 0)
     is_st = "ST" in name.upper() if name else False
-    risk_check = check_risk_rules(
-        code=code,
-        indicators=indicators,
-        is_st=is_st,
-        is_new_stock=False
-    )
+    risk_check = check_risk_rules(code=code, indicators=indicators, is_st=is_st, is_new_stock=False)
+    tick_request_queue("评分+风控")
 
     if us_mode:
-        print("[13/13] 新闻情感... [N/A 美股不适用]")
         sentiment_result = {"score": 0, "label": "N/A", "positive": 0, "negative": 0, "neutral": 0}
-
-        print("\n计算财务健康指标和投资评级...")
         financial_health = calculate_financial_health(quote, financial_data)
         rating = calculate_rating(indicators, financial_health, fund_flow)
-
-        print("估值分位... [N/A 美股无历史分位数据]")
         valuation_percentile = None
-
-        print("行业对比... [N/A 美股不适用]")
         industry_comparison = None
+        tick_request_queue("美股完成")
     else:
-        print("[13/13] 分析新闻情感...")
+        print("[10] 分析新闻情感...")
         sentiment_result = analyze_sentiment(news_df.to_dict("records") if not news_df.empty else [])
-
-        print("\n计算财务健康指标和投资评级...")
         financial_health = calculate_financial_health(quote, financial_data)
         rating = calculate_rating(indicators, financial_health, fund_flow)
+        tick_request_queue("情感+财务")
 
-        print("分析估值分位数...")
+        print("[11] 分析估值分位数...")
         valuation_percentile = analyze_valuation_percentile(code, quote, years=5, kline_data=df_hist)
+        tick_request_queue("估值分位")
 
-        print("分析行业对比...")
-        industry_comparison = analyze_industry_comparison(code)
+        # ── 渐进降级：Tier <3 时跳过行业对比 ──
+        if current_tier >= 3:
+            print("[12] 分析行业对比...")
+            industry_comparison = analyze_industry_comparison(code)
+            tick_request_queue("行业对比")
+        else:
+            print("[12] 行业对比... [Tier {0} 降级跳过，节省请求额度]".format(current_tier))
+            industry_comparison = None
+            tick_request_queue("跳过行业对比")
 
     print("\n生成分析报告...")
     report = generate_report(
