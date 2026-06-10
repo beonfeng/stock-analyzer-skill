@@ -215,8 +215,9 @@ _CACHE_TTL_MAP = {
     "/api/qt/stock/kline/get": 1800,
     "/api/qt/stock/get": 300,
     "/api/qt/clist/get": 600,
-    "/api/data/get": 3600,
+    "/api/data/get": 86400,         # 财务/主营业务/股东数据季度更新，缓存 1 天
     "/api/news/get": 900,
+    "/PC_HSF10/CompanySurvey": 86400,  # 公司基本资料极少变化，缓存 1 天
 }
 
 # ============================================================
@@ -466,18 +467,25 @@ def safe_num(v, default=0):
         return default
 
 
-def safe_display(v, fmt=".2f"):
+def safe_display(v, fmt=".2f", show_zero=False):
+    """安全显示数值，缺失数据返回 '-' 而非 '0'，避免歧义。
+
+    Args:
+        v: 待显示的值
+        fmt: 数值格式化字符串
+        show_zero: True 时 0 显示为 "0.00"（用于 ROE/增长率等 0 是合法值的场景）
+    """
     if v is None or v == "-" or v == "":
         return "-"
     if isinstance(v, str) and v.strip() in ("N/A", "--", "nan", "NaN", "NA", "null"):
         return "-"
     if isinstance(v, (int, float)):
-        if v == 0:
+        if not show_zero and v == 0:
             return "-"
         return f"{v:{fmt}}"
     try:
         fv = float(v)
-        if fv == 0:
+        if not show_zero and fv == 0:
             return "-"
         return f"{fv:{fmt}}"
     except (ValueError, TypeError):

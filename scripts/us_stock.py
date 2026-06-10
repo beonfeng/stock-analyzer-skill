@@ -19,7 +19,10 @@ except ImportError:
 import pandas as pd
 import numpy as np
 
-from scripts.market_utils import is_us_stock
+try:
+    from .market_utils import is_us_stock
+except ImportError:
+    from scripts.market_utils import is_us_stock
 
 
 def check_yfinance():

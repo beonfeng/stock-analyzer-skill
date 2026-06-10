@@ -428,6 +428,7 @@ def fetch_financial_report(code):
 def fetch_company_profile(code):
     """
     获取公司概况：基本资料 + 主营业务构成。
+    数据变化慢（季度更新），session 内跨分析 memo 复用。
 
     Args:
         code: 股票代码（如 '603195'）
@@ -440,6 +441,12 @@ def fetch_company_profile(code):
             '主营业务': list,    # [{'名称': str, '收入': float, '占比': float, '毛利率': float}, ...]
         }
     """
+    # Session memo: 公司概况变化慢，同 session 内复用
+    memo_key = f"company_profile_{code}"
+    cached = memo_get(memo_key)
+    if cached is not None:
+        return cached
+
     result = {
         '基本信息': {},
         '公司简介': '',
@@ -573,6 +580,7 @@ def fetch_company_profile(code):
     except Exception as e:
         print(f"  [警告] 十大流通股东获取失败: {e}")
 
+    memo_set(memo_key, result)
     return result
 
 
@@ -763,13 +771,15 @@ def calculate_indicators(df):
     indicators["D"] = d.iloc[-1]
     indicators["J"] = 3 * k.iloc[-1] - 2 * d.iloc[-1]
 
-    # RSI
+    # RSI（delta/gain/loss 与周期无关，提前计算避免重复）
+    delta = close.diff()
+    gain = delta.where(delta > 0, 0)
+    loss = (-delta.where(delta < 0, 0))
     for period in [6, 12, 24]:
-        delta = close.diff()
-        gain = delta.where(delta > 0, 0).rolling(period).mean()
-        loss = (-delta.where(delta < 0, 0)).rolling(period).mean()
-        loss_safe = loss.replace(0, 1e-10)  # 避免除零
-        rs = gain / loss_safe
+        g = gain.rolling(period).mean()
+        l = loss.rolling(period).mean()
+        l_safe = l.replace(0, 1e-10)  # 避免除零
+        rs = g / l_safe
         indicators[f"RSI{period}"] = (100 - 100 / (1 + rs)).iloc[-1]
 
     # 布林带
@@ -1441,14 +1451,23 @@ def _section_fund_flow(ctx):
             data = ctx.fund_flow.get(period)
             if not data:
                 continue
-            L.append(f"### {period}资金流向\n")
-            L.append("| 项目 | 净流入 | 占比 | 说明 |")
-            L.append("|------|--------|------|------|")
-            for fk, pk, label in field_labels:
-                val = safe_num(data.get(fk, 0))
-                pct = data.get(pk, "-")
+            # 多日周期仅有主力净流入汇总，只显示一行避免全零行
+            if period == "今日":
+                L.append(f"### {period}资金流向\n")
+                L.append("| 项目 | 净流入 | 占比 | 说明 |")
+                L.append("|------|--------|------|------|")
+                for fk, pk, label in field_labels:
+                    val = safe_num(data.get(fk, 0))
+                    pct = data.get(pk, "-")
+                    desc = "资金看好" if val > 0 else "资金撤离" if val < 0 else "持平"
+                    L.append(f"| {label} | {fmt_num(val)} | {pct} | {desc} |")
+            else:
+                L.append(f"### {period}资金流向\n")
+                L.append("| 项目 | 净流入 | 说明 |")
+                L.append("|------|--------|------|")
+                val = safe_num(data.get("f62", 0))
                 desc = "资金看好" if val > 0 else "资金撤离" if val < 0 else "持平"
-                L.append(f"| {label} | {fmt_num(val)} | {pct} | {desc} |")
+                L.append(f"| 主力净流入 | {fmt_num(val)} | {desc} |")
             L.append("")
     else:
         L.append("> 暂无资金流向数据（网络不稳定，部分接口可能获取失败）\n")

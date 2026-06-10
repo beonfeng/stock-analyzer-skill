@@ -130,3 +130,8 @@ def test_safe_display():
     # 自定义格式
     assert safe_display(15.34, ".1f") == "15.3"
     assert safe_display(100, ".0f") == "100"
+
+    # show_zero=True 时 0 显示为数值而非 "-"
+    assert safe_display(0, show_zero=True) == "0.00"
+    assert safe_display(0.0, show_zero=True) == "0.00"
+    assert safe_display("0", show_zero=True) == "0.00"  # 字符串 "0" 是合法零值
