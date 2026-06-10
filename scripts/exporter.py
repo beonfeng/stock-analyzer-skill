@@ -329,12 +329,17 @@ def _simple_md_to_html(md_content: str) -> str:
     return "\n".join(html_lines)
 
 
+# 预编译正则表达式（行内格式处理）
+_RE_INLINE_CODE = re.compile(r"`(.+?)`")
+_RE_BOLD = re.compile(r"\*\*(.+?)\*\*")
+
+
 def _inline_format(text: str) -> str:
     """处理行内格式：粗体、行内代码"""
     # 先转义 HTML 特殊字符
     text = html.escape(text)
     # 行内代码（先处理，避免被粗体正则干扰）
-    text = re.sub(r"`(.+?)`", r"<code>\1</code>", text)
+    text = _RE_INLINE_CODE.sub(r"<code>\1</code>", text)
     # 粗体
-    text = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", text)
+    text = _RE_BOLD.sub(r"<strong>\1</strong>", text)
     return text

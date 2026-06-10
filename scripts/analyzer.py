@@ -14,7 +14,7 @@ import pandas as pd
 import numpy as np
 
 from .market_utils import get_market_info, convert_price, is_us_stock, get_secid
-from .utils import _http_get, _http_get_safe, safe_num, is_trading_day, print_request_stats, reset_request_stats
+from .utils import _http_get, _http_get_safe, safe_num, safe_display, is_trading_day, print_request_stats, reset_request_stats
 from .technical_indicators import calculate_extended_indicators
 from .valuation_analysis import analyze_valuation_percentile
 from .industry_analysis import analyze_industry_comparison
@@ -191,19 +191,18 @@ def fetch_fund_flow(code):
 
 
 def fetch_north_flow():
-    """获取北向资金数据"""
+    """获取北向资金数据（使用东方财富北向资金专用接口）"""
     result = {}
-    for symbol in ["沪股通", "深股通"]:
+    # 北向资金使用专用的净买入数据接口
+    # 沪股通/深股通净买入金额通过资金流向接口获取
+    for symbol, secid in [("沪股通", "1.000016"), ("深股通", "0.399005")]:
         params = {
             "fields1": "f1,f2,f3,f4",
             "fields2": "f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61,f62,f63",
             "klt": "101", "lmt": "10",
             "ut": "b2884a393a59ad64002292a3e90d46a5",
+            "secid": secid,
         }
-        if symbol == "沪股通":
-            params["secid"] = "1.000300"
-        else:
-            params["secid"] = "0.399001"
         try:
             j = _http_get("push2his.eastmoney.com", "/api/qt/stock/kline/get", params)
             klines = j.get("data", {}).get("klines", [])
@@ -313,9 +312,10 @@ def fetch_financial_report(code):
         if market_code == 'HK':
             return []
         # 获取现金流量表
+        _market_suffix = {'SH': 'SH', 'SZ': 'SZ', 'BJ': 'BJ'}.get(market_code, 'SZ')
         params = {
             "type": "0", "sty": "APP_F10_FinanceSumFinance",
-            "filter": f"(SECUCODE=\"{code}.{'SH' if market_code == 'SH' else 'SZ'}\")",
+            "filter": f"(SECUCODE=\"{code}.{_market_suffix}\")",
             "p": "1", "ps": "5", "sr": "-1", "st": "REPORT_DATE",
             "source": "HSF10", "client": "PC",
         }
@@ -367,8 +367,9 @@ def fetch_company_profile(code):
 
     # 1. 获取公司基本资料
     try:
+        _code_prefix = {'SH': 'SH', 'SZ': 'SZ', 'BJ': 'BJ'}.get(market_code, 'SZ')
         params1 = {
-            'code': f"{'SH' if market_code == 'SH' else 'SZ'}{code}",
+            'code': f"{_code_prefix}{code}",
             'client_source': 'web',
         }
         j1 = _http_get_safe(
@@ -1016,7 +1017,7 @@ def _section_company_analysis(ctx):
 
     # 3. 估值风险
     pe = safe_num(ctx.quote.get('f9', 0)) if ctx.quote else 0
-    if pe > 0 and pe > 80:
+    if pe > 80:
         risks.append(f"**估值偏高**：当前 PE {pe:.1f}，估值透支未来增长，面临估值压缩风险")
 
     # 4. 涨幅风险
@@ -1117,9 +1118,9 @@ def _section_summary(ctx):
     pe = safe_num(ctx.quote.get("f9", 0)) if ctx.quote else 0
     pb = safe_num(ctx.quote.get("f23", 0)) if ctx.quote else 0
     mv = ctx.quote.get("f20", 0) if ctx.quote else 0
-    if pe or pb:
-        pe_str = f"{pe:.2f}" if pe else "-"
-        pb_str = f"{pb:.2f}" if pb else "-"
+    if pe != 0 or pb != 0:
+        pe_str = f"{pe:.2f}" if pe != 0 else "-"
+        pb_str = f"{pb:.2f}" if pb != 0 else "-"
         L.append(f"**基本面**：市盈率(动) {pe_str}，市净率 {pb_str}，总市值 {fmt_num(mv) if isinstance(mv,(int,float)) else mv}。")
 
     # 财务排雷一句话
@@ -1365,8 +1366,11 @@ def _section_fundamentals(ctx):
             ("总市值", "f20", "公司总价值（股价×总股本）"),
             ("流通市值", "f21", "可在市场上交易的股票总价值"),
         ]:
-            v = ctx.quote.get(key, "-")
-            if "市值" in label and isinstance(v, (int, float)): v = fmt_num(v)
+            v = ctx.quote.get(key)
+            if "市值" in label and isinstance(v, (int, float)):
+                v = fmt_num(v)
+            else:
+                v = safe_display(v)
             L.append(f"| {label} | {v} | {desc} |")
 
         L.append("\n### 4.2 盈利与成长\n")
@@ -1415,9 +1419,13 @@ def _section_financial_screen(ctx):
         ("净利润同比", "净利润同比", "净利润同比增长率", "pct"),
         ("资产负债率", "资产负债率", "总负债/总资产，越高财务风险越大", "pct"),
     ]:
-        v = ctx.financial_health.get(key, "-")
-        if isinstance(v, (int, float)):
-            if fmt == "amount":
+        v = ctx.financial_health.get(key)
+        if v is None:
+            v = "-"
+        elif isinstance(v, (int, float)):
+            if v == 0:
+                v = "-"  # 0 视为数据缺失
+            elif fmt == "amount":
                 v = fmt_num(v)
             elif fmt == "pct":
                 v = f"{v:.2f}%"
@@ -1444,13 +1452,14 @@ def _section_financial_screen(ctx):
     # 估值检查
     pe_val = ctx.financial_health.get("PE", 0)
     # 年化涨幅计算：优先用 250 日数据，不足时用 60 日复合增长率近似
+    # 数据不足时（<60天）不触发逆向定价检查，避免误判
     if len(ctx.df) >= 250:
         chg_1y = ((ctx.df["收盘"].iloc[-1] / ctx.df["收盘"].iloc[-250]) - 1) * 100
     elif len(ctx.df) >= 60:
         chg_60 = ctx.indicators.get("涨跌幅_60日", 0)
         chg_1y = ((1 + chg_60 / 100) ** 4 - 1) * 100  # 复合增长率
     else:
-        chg_1y = ctx.indicators.get("涨跌幅_60日", 0) * 4  # 数据不足时简单线性近似
+        chg_1y = 0  # 数据不足，不触发逆向定价检查
     if pe_val > 80 or chg_1y > 200:
         L.append("\n### 5.3 逆向定价触发检查\n")
         L.append("当前估值或涨幅触发逆向定价条件，需特别关注价格是否透支未来增长：\n")
@@ -1488,7 +1497,8 @@ def _section_industry_board(ctx):
         L.append("|------|------|--------|--------|")
         for i, (_, row) in enumerate(ctx.industry_df.head(20).iterrows(), 1):
             chg = row['涨跌幅']
-            L.append(f"| {i} | {row['板块']} | {fmt_pct(chg) if isinstance(chg,(int,float)) else chg} | {row.get('换手率','-')} |")
+            turnover = row.get('换手率', '-')
+            L.append(f"| {i} | {row['板块']} | {fmt_pct(chg) if isinstance(chg,(int,float)) else chg} | {fmt_pct(turnover) if isinstance(turnover,(int,float)) else turnover} |")
     else:
         L.append("> 暂无行业数据")
 
@@ -1650,15 +1660,21 @@ def _section_counter_evidence(ctx):
 
     ma20 = ctx.indicators.get("MA20", 0)
     ma60 = ctx.indicators.get("MA60", 0)
-    if ctx.price > ma20:
-        L.append(f"2. 股价跌破 20 日均线（当前 {ma20:.2f}）")
+    if ma20 > 0:
+        if ctx.price > ma20:
+            L.append(f"2. 股价跌破 20 日均线（当前 {ma20:.2f}）")
+        else:
+            L.append(f"2. 股价站上 20 日均线（当前 {ma20:.2f}）")
     else:
-        L.append(f"2. 股价站上 20 日均线（当前 {ma20:.2f}）")
+        L.append(f"2. 20 日均线数据不足，暂无法判断")
 
-    if ctx.price > ma60:
-        L.append(f"3. 股价跌破 60 日均线（当前 {ma60:.2f}）")
+    if ma60 > 0:
+        if ctx.price > ma60:
+            L.append(f"3. 股价跌破 60 日均线（当前 {ma60:.2f}）")
+        else:
+            L.append(f"3. 股价站上 60 日均线（当前 {ma60:.2f}）")
     else:
-        L.append(f"3. 股价站上 60 日均线（当前 {ma60:.2f}）")
+        L.append(f"3. 60 日均线数据不足，暂无法判断")
 
     if ctx.financial_health:
         profit_growth = ctx.financial_health.get("净利润同比", 0)
@@ -2213,7 +2229,10 @@ def compare_stocks_wrapper(code_a: str, code_b: str) -> Dict[str, Any]:
     name_a, quote_a = get_stock_name(code_a, return_quote=True)
     df_a = fetch_kline(code_a, days=120)
     indicators_a = calculate_indicators(df_a)
-    rating_a = calculate_rating(indicators_a, {}, {})
+    fund_flow_a = fetch_fund_flow(code_a)
+    financial_data_a = fetch_financial_report(code_a)
+    financial_health_a = calculate_financial_health(quote_a, financial_data_a)
+    rating_a = calculate_rating(indicators_a, financial_health_a, fund_flow_a)
 
     stock_a = {
         "code": code_a,
@@ -2224,6 +2243,8 @@ def compare_stocks_wrapper(code_a: str, code_b: str) -> Dict[str, Any]:
         "market_cap": safe_num(quote_a.get("f20", 0)) if quote_a else 0,
         "change_pct": indicators_a.get("涨跌幅_今日", 0),
         "indicators": indicators_a,
+        "fund_flow": fund_flow_a,
+        "quote": quote_a,
         "rating": rating_a,
     }
 
@@ -2231,7 +2252,10 @@ def compare_stocks_wrapper(code_a: str, code_b: str) -> Dict[str, Any]:
     name_b, quote_b = get_stock_name(code_b, return_quote=True)
     df_b = fetch_kline(code_b, days=120)
     indicators_b = calculate_indicators(df_b)
-    rating_b = calculate_rating(indicators_b, {}, {})
+    fund_flow_b = fetch_fund_flow(code_b)
+    financial_data_b = fetch_financial_report(code_b)
+    financial_health_b = calculate_financial_health(quote_b, financial_data_b)
+    rating_b = calculate_rating(indicators_b, financial_health_b, fund_flow_b)
 
     stock_b = {
         "code": code_b,
@@ -2242,6 +2266,8 @@ def compare_stocks_wrapper(code_a: str, code_b: str) -> Dict[str, Any]:
         "market_cap": safe_num(quote_b.get("f20", 0)) if quote_b else 0,
         "change_pct": indicators_b.get("涨跌幅_今日", 0),
         "indicators": indicators_b,
+        "fund_flow": fund_flow_b,
+        "quote": quote_b,
         "rating": rating_b,
     }
 

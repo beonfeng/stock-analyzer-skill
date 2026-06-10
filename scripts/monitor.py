@@ -57,7 +57,8 @@ def parse_counter_evidence(content: str) -> List[Dict[str, Any]]:
       - params: 附带参数（如均线值）
     """
     # 定位反证清单章节（标题可能带有后缀如"与跟踪因子"）
-    header_pattern = r"##\s*[一二三四五六七八九十百]+\s*[、.]\s*反证清单.*"
+    # 支持中文数字（一、二、三...）和阿拉伯数字（1、2、3...）
+    header_pattern = r"##\s*(?:[一二三四五六七八九十百]+|\d+)\s*[、.]\s*反证清单.*"
     match = re.search(header_pattern, content)
     if not match:
         return []
@@ -179,10 +180,22 @@ def check_condition_now(condition: Dict[str, Any], indicators: Dict, fund_flow: 
             result["detail"] = f"{'已站上' if price > ma_value else '未站上'}"
 
     elif ctype == "profit_growth":
-        # 需要财务数据，当前无法实时检查
-        result["triggered"] = False
-        result["current_value"] = "需季报更新后检查"
-        result["detail"] = "需要最新财报数据，当前跳过"
+        # 尝试从行情数据获取净利润同比（f41 字段）
+        profit_growth = indicators.get("净利润同比", 0)
+        if profit_growth != 0:
+            result["current_value"] = f"净利润同比={profit_growth:.1f}%"
+            if condition["direction"] == "bearish":
+                # 反证条件是"转负"，检查是否已转负
+                result["triggered"] = profit_growth < 0
+                result["detail"] = f"{'已转负' if profit_growth < 0 else '仍为正增长'}"
+            else:
+                # 反证条件是"继续下滑"，检查是否继续下滑
+                prev_growth = condition["params"].get("prev_growth", 0)
+                result["triggered"] = profit_growth < prev_growth
+                result["detail"] = f"{'继续下滑' if profit_growth < prev_growth else '有所改善'}"
+        else:
+            result["current_value"] = "需季报更新后检查"
+            result["detail"] = "需要最新财报数据，当前跳过"
 
     elif ctype == "fund_flow_streak":
         # 检查 5 日资金流向
@@ -200,9 +213,11 @@ def check_condition_now(condition: Dict[str, Any], indicators: Dict, fund_flow: 
             result["detail"] = f"5日累计净流入 {flow_5d/1e8:.2f} 亿"
 
     elif ctype == "sector_rank":
+        # 尝试从行情数据获取所属行业信息
+        # 由于板块排名需要实时查询，此处标记为需要手动确认
         result["triggered"] = False
         result["current_value"] = "需板块数据"
-        result["detail"] = "需要板块排名数据，当前跳过"
+        result["detail"] = "建议查看行业板块排名是否仍在前30名"
 
     return result
 
@@ -303,7 +318,19 @@ def monitor_reports(report_dir: str, codes: Optional[List[str]] = None, days: Op
 
     for code, report_info in seen_codes.items():
         filepath = Path(report_info["path"])
-        content = filepath.read_text(encoding="utf-8")
+        try:
+            content = filepath.read_text(encoding="utf-8")
+        except Exception as e:
+            results.append({
+                "code": code,
+                "name": report_info["name"],
+                "report_date": report_info["date"],
+                "report_path": report_info["path"],
+                "conditions": [],
+                "triggered_count": 0,
+                "error": f"读取报告失败: {e}",
+            })
+            continue
 
         # 解析反证清单
         conditions = parse_counter_evidence(content)

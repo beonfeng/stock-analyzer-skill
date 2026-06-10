@@ -355,6 +355,41 @@ def safe_num(v, default=0):
         return default
 
 
+def safe_display(v, fmt=".2f"):
+    """
+    安全显示数值，缺失数据返回 '-' 而非 0。
+
+    用于报告显示，避免将数据缺失显示为 0（歧义）。
+    - PE=0 可能是"数据缺失"也可能是"零收益"
+    - 毛利率=0 可能是"数据缺失"也可能是"零毛利"
+
+    Args:
+        v: 待显示的值（可以是任何类型）
+        fmt: 数值格式（默认 ".2f"）
+
+    Returns:
+        str: 格式化后的字符串，缺失数据返回 '-'
+    """
+    # 显式缺失值
+    if v is None or v == "-" or v == "":
+        return "-"
+    if isinstance(v, str) and v.strip() in ("N/A", "--", "nan", "NaN", "NA", "null"):
+        return "-"
+    # 数值类型
+    if isinstance(v, (int, float)):
+        if v == 0:
+            return "-"  # 0 视为数据缺失
+        return f"{v:{fmt}}"
+    # 其他类型尝试转换
+    try:
+        fv = float(v)
+        if fv == 0:
+            return "-"
+        return f"{fv:{fmt}}"
+    except (ValueError, TypeError):
+        return "-"
+
+
 def _http_get(host, path, params=None, timeout=15, retries=2, use_cache=True):
     """
     直连 HTTPS GET，绕过系统代理，智能重试。
@@ -431,17 +466,18 @@ def _http_get(host, path, params=None, timeout=15, retries=2, use_cache=True):
             except Exception as de:
                 print(f"  [警告] 解压缩失败: {de}")
 
-            # 尝试多种编码
-            for enc in ['utf-8', 'gbk', 'gb2312', 'latin-1']:
+            # 尝试多种编码（先检测编码，再解析 JSON）
+            text = None
+            for enc in ['utf-8', 'gbk', 'gb2312']:
                 try:
                     text = data.decode(enc)
-                    result = json.loads(text)
                     break
-                except (UnicodeDecodeError, json.JSONDecodeError):
+                except UnicodeDecodeError:
                     continue
-            else:
-                text = data.decode('latin-1')
-                result = json.loads(text)
+            if text is None:
+                text = data.decode('latin-1')  # latin-1 能解码任何字节序列
+
+            result = json.loads(text)
 
             # 缓存结果（根据接口路径设置不同的缓存时长）
             if use_cache and result is not None:

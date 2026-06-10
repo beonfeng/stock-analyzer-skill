@@ -94,3 +94,39 @@ def test_analyze_sector_wrapper():
     # result = analyze_sector_wrapper("白酒")
     # assert "sector_name" in result
     pass  # 跳过，需要网络
+
+
+def test_safe_display():
+    """测试 safe_display 函数 - 数据缺失显示 '-' 而非 0"""
+    from scripts.utils import safe_display
+
+    # None/空值 → "-"
+    assert safe_display(None) == "-"
+    assert safe_display("-") == "-"
+    assert safe_display("") == "-"
+    assert safe_display("N/A") == "-"
+    assert safe_display("--") == "-"
+    assert safe_display("nan") == "-"
+    assert safe_display("NaN") == "-"
+    assert safe_display("null") == "-"
+
+    # 0 → "-"（数据缺失）
+    assert safe_display(0) == "-"
+    assert safe_display(0.0) == "-"
+    assert safe_display("0") == "-"
+
+    # 正常数值 → 格式化显示
+    assert safe_display(15.34) == "15.34"
+    assert safe_display(100) == "100.00"
+    assert safe_display(-5.2) == "-5.20"
+
+    # 负值也是有效数据
+    assert safe_display(-0.5) == "-0.50"
+
+    # 非数值字符串 → "-"
+    assert safe_display("abc") == "-"
+    assert safe_display("暂无") == "-"
+
+    # 自定义格式
+    assert safe_display(15.34, ".1f") == "15.3"
+    assert safe_display(100, ".0f") == "100"
