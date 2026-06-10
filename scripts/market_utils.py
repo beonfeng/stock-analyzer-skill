@@ -176,7 +176,12 @@ def get_secid(code, market_id):
     Examples:
         >>> get_secid('00700', 116)
         '116.00700'
+        >>> get_secid('0700', 116)
+        '116.00700'
         >>> get_secid('600519', 1)
         '1.600519'
     """
+    # 港股代码补齐到 5 位（API 要求 secid 中代码为 5 位格式）
+    if market_id == 116:
+        code = str(code).zfill(5)
     return f"{market_id}.{code}"

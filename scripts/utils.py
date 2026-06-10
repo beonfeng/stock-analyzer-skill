@@ -660,7 +660,6 @@ def _http_get(host, path, params=None, timeout=15, retries=2, use_cache=True):
             if use_cache and result:
                 _set_cache(cache_key, result, path)
 
-            global _failure_count_window
             _success_count_window += 1
 
             return result

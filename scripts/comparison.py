@@ -102,9 +102,10 @@ def compare_two_stocks(
     # 5. RSI 对比
     rsi_a = stock_a.get("indicators", {}).get("RSI6", 50)
     rsi_b = stock_b.get("indicators", {}).get("RSI6", 50)
-    # RSI 50-70 之间较好
-    rsi_score_a = 70 - abs(rsi_a - 60)  # 越接近 60 越好
-    rsi_score_b = 70 - abs(rsi_b - 60)
+    # 以 50 为中性点，距中性点越近越好；超卖（<30）也是买入机会
+    # 评分 = 100 - 2 × |RSI - 50|，使 RSI=50 得满分 100，RSI=0 或 100 得 0 分
+    rsi_score_a = 100 - 2 * abs(rsi_a - 50)
+    rsi_score_b = 100 - 2 * abs(rsi_b - 50)
     rsi_winner = "a" if rsi_score_a > rsi_score_b else "b" if rsi_score_b > rsi_score_a else "tie"
     comparison.append({
         "dimension": "RSI强弱",

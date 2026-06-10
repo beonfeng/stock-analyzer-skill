@@ -108,20 +108,20 @@ def fetch_us_realtime_quote(ticker: str) -> dict:
         price = info.get("regularMarketPrice") if info.get("regularMarketPrice") is not None else info.get("currentPrice", 0)
         market_cap = info.get("marketCap", 0)
 
-    # 映射为东方财富字段格式
-    pe = info.get("trailingPE") if info.get("trailingPE") is not None else info.get("forwardPE") or 0
-    pb = info.get("priceToBook") or 0
-    roe = info.get("returnOnEquity") or 0
+    # 映射为东方财富字段格式（使用 is not None 判断，避免 falsy 值被覆盖）
+    pe = info.get("trailingPE") if info.get("trailingPE") is not None else (info.get("forwardPE") if info.get("forwardPE") is not None else 0)
+    pb = info.get("priceToBook") if info.get("priceToBook") is not None else 0
+    roe = info.get("returnOnEquity") if info.get("returnOnEquity") is not None else 0
     if roe != 0:
         roe = roe * 100  # 小数转百分比
-    gross_margin = info.get("grossMargins") or 0
+    gross_margin = info.get("grossMargins") if info.get("grossMargins") is not None else 0
     if gross_margin != 0:
         gross_margin = gross_margin * 100
-    revenue = info.get("totalRevenue") or 0
-    profit_growth = info.get("earningsGrowth") or 0
+    revenue = info.get("totalRevenue") if info.get("totalRevenue") is not None else 0
+    profit_growth = info.get("earningsGrowth") if info.get("earningsGrowth") is not None else 0
     if profit_growth != 0:
         profit_growth = profit_growth * 100
-    debt_ratio = info.get("debtToEquity") or 0
+    debt_ratio = info.get("debtToEquity") if info.get("debtToEquity") is not None else 0
 
     return {
         "f14": info.get("shortName", ticker),  # 股票名称
@@ -221,11 +221,11 @@ def calculate_us_financial_health(quote: dict, financials: dict) -> dict:
     """
     health = {}
 
-    pe = quote.get("f9") or 0
-    pb = quote.get("f23") or 0
-    roe = quote.get("f37") or 0
-    debt_ratio = quote.get("f34") or 0
-    profit_growth = quote.get("f41") or 0
+    pe = quote.get("f9") if quote.get("f9") is not None else 0
+    pb = quote.get("f23") if quote.get("f23") is not None else 0
+    roe = quote.get("f37") if quote.get("f37") is not None else 0
+    debt_ratio = quote.get("f34") if quote.get("f34") is not None else 0
+    profit_growth = quote.get("f41") if quote.get("f41") is not None else 0
 
     health["市盈率"] = pe if pe is not None else 0
     health["市净率"] = pb if pb is not None else 0

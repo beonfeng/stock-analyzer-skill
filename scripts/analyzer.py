@@ -18,6 +18,8 @@ from .utils import (_http_get, _http_get_safe, safe_num, safe_display,
     is_trading_day, print_request_stats, reset_request_stats,
     init_request_queue, tick_request_queue,
     memo_get, memo_set, get_session_request_stats)
+from .alternative_sources import (fetch_quote_tencent, fetch_quote_sina,
+    fetch_kline_tencent, fetch_kline_sina)
 from .technical_indicators import calculate_extended_indicators
 from .valuation_analysis import analyze_valuation_percentile
 from .industry_analysis import analyze_industry_comparison
@@ -158,6 +160,24 @@ def fetch_realtime_quote(code):
         if code in item_map:
             item_map[code]["market"] = market_code
             return item_map[code]
+
+    # 方法3（备选源）：腾讯财经 → 新浪财经
+    # 东方财富 push2 不可用时自动切换，分散请求压力
+    try:
+        alt_quote = fetch_quote_tencent(code)
+        if alt_quote and alt_quote.get("f2", 0) > 0:
+            print(f"  [提示] 实时行情来自 {alt_quote.get('_source', '腾讯财经')}（东方财富不可用）")
+            return alt_quote
+    except Exception:
+        pass
+
+    try:
+        alt_quote = fetch_quote_sina(code)
+        if alt_quote and alt_quote.get("f2", 0) > 0:
+            print(f"  [提示] 实时行情来自新浪财经（所有主数据源不可用）")
+            return alt_quote
+    except Exception:
+        pass
 
     return {"market": market_code}
 
@@ -1474,7 +1494,7 @@ def _section_financial_screen(ctx):
         chg_1y = ((ctx.df["收盘"].iloc[-1] / ctx.df["收盘"].iloc[-250]) - 1) * 100
     elif len(ctx.df) >= 60:
         chg_60 = ctx.indicators.get("涨跌幅_60日", 0)
-        chg_1y = ((1 + chg_60 / 100) ** 4 - 1) * 100  # 复合增长率
+        chg_1y = ((1 + chg_60 / 100) ** 4.2 - 1) * 100  # 年化（60日 × 4.2 ≈ 252 个交易日）
     else:
         chg_1y = 0  # 数据不足，不触发逆向定价检查
     if pe_val > 80 or chg_1y > 200:
@@ -1900,10 +1920,12 @@ def analyze_stock(code, output_dir="."):
     print(f"  输出目录: {out_path}")
 
     # ── 冷启动预热：预加载市场级数据 ──
+    # 美股模式跳过 A 股专属的北向资金预热（节省 API 请求额度）
     print("  [预热] 预加载市场级数据...")
     try:
         fetch_industry_boards()
-        fetch_north_flow()
+        if not us_mode:
+            fetch_north_flow()
         print("  [预热] 完成（后续分析复用缓存，零额外请求）")
     except Exception:
         pass
@@ -2048,8 +2070,13 @@ SIGNAL_WEIGHTS = {
     "rsi_extreme_oversold": 1.5,  # RSI 严重超卖（<20）— 强反弹信号，加重权重
     "boll_lower": 1.0,            # 触及布林下轨 — 短期超卖支撑
     "boll_upper": -1.0,           # 触及布林上轨 — 短期超买压力
-    "bias_alert": -1.0,           # 乖离率预警（>5%）— 均值回归风险
-    "volume_up": 1.0,             # 放量上涨 — 量价配合看多
+    "bias_alert_high": -1.0,       # 乖离率正偏离预警（>5%）— 追高风险
+    "bias_alert_low": 1.0,         # 乖离率负偏离预警（<-5%）— 超卖反弹机会
+    "kdj_oversold": 1.0,           # KDJ 超卖（K<20）— 反弹机会
+    "kdj_deep_oversold": 1.5,      # KDJ 深度超卖（K<10）— 强反弹信号
+    "kdj_overbought": -1.0,        # KDJ 超买（K>80）— 回调风险
+    "kdj_extreme_overbought": -2.0, # KDJ 严重超买（K>90）— 高度危险
+    "volume_up": 1.0,              # 放量上涨 — 量价配合看多
     "volume_down_weak": -0.5,     # 缩量上涨 — 上涨动能不足
     "volume_down_panic": -1.5,    # 放量下跌 — 恐慌性抛售信号
     "obv_inflow": 0.5,            # OBV 资金流入 — 资金面辅助确认
@@ -2148,6 +2175,24 @@ def calculate_weighted_score(indicators: Dict[str, float]) -> Dict[str, Any]:
         signals.append("RSI超买(>70) -1.0")
         bearish_count += 1
 
+    # 3.5 KDJ 信号（超买超卖）
+    if k_val < 10:
+        score += SIGNAL_WEIGHTS["kdj_deep_oversold"]
+        signals.append("KDJ深度超卖(K<10) +1.5")
+        bullish_count += 1
+    elif k_val < 20:
+        score += SIGNAL_WEIGHTS["kdj_oversold"]
+        signals.append("KDJ超卖(K<20) +1.0")
+        bullish_count += 1
+    elif k_val > 90:
+        score += SIGNAL_WEIGHTS["kdj_extreme_overbought"]
+        signals.append("KDJ严重超买(K>90) -2.0")
+        bearish_count += 1
+    elif k_val > 80:
+        score += SIGNAL_WEIGHTS["kdj_overbought"]
+        signals.append("KDJ超买(K>80) -1.0")
+        bearish_count += 1
+
     # 4. 布林带信号
     if price > 0:
         if boll_up > 0 and price >= boll_up * 0.98:
@@ -2159,13 +2204,17 @@ def calculate_weighted_score(indicators: Dict[str, float]) -> Dict[str, Any]:
             signals.append("触及布林下轨 +1.0")
             bullish_count += 1
 
-    # 5. 乖离率检查
+    # 5. 乖离率检查（区分正负方向）
     if ma20 > 0 and price > 0:
         bias = (price - ma20) / ma20 * 100
-        if abs(bias) > 5:
-            score += SIGNAL_WEIGHTS["bias_alert"]
-            signals.append(f"乖离率预警({bias:.1f}%) -1.0")
+        if bias > 5:
+            score += SIGNAL_WEIGHTS["bias_alert_high"]
+            signals.append(f"乖离率正偏离({bias:.1f}%) -1.0")
             bearish_count += 1
+        elif bias < -5:
+            score += SIGNAL_WEIGHTS["bias_alert_low"]
+            signals.append(f"乖离率负偏离({bias:.1f}%) +1.0")
+            bullish_count += 1
 
     # 6. 量价关系
     if vol_ma5 > 0 and volume > 0:

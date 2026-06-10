@@ -196,9 +196,10 @@ def calc_support_resistance(
         high_60 = recent_60["最高"].max()
         low_60 = recent_60["最低"].min()
 
-        if high_60 > current_price and abs(high_60 - high_20) > 0.01:
+        # 相对判断：差异 < 1% 视为重复，避免对低价股和高价股使用同一绝对阈值
+        if high_60 > current_price and (abs(high_60 - high_20) / (high_20 + 1e-10)) > 0.01:
             resistance.append({"price": round(high_60, 2), "source": "60日最高"})
-        if low_60 < current_price and abs(low_60 - low_20) > 0.01:
+        if low_60 < current_price and (abs(low_60 - low_20) / (low_20 + 1e-10)) > 0.01:
             support.append({"price": round(low_60, 2), "source": "60日最低"})
 
     # 4. 斐波那契回撤（基于近期高低点）
@@ -329,7 +330,8 @@ def check_risk_rules(
         if bias > 5:
             warnings.append(f"乖离率 {bias:.1f}% > 5%，不建议追高")
         elif bias < -5:
-            warnings.append(f"乖离率 {bias:.1f}% < -5%，超卖区域")
+            # 负乖离是超卖信号，属于机会提示而非风险警告
+            pass  # 不在风控提示中展示（已在技术分析中体现）
 
     # 2. 均线间距检查（间距 < 1% 不认定为有效排列）
     if ma5 > 0 and ma10 > 0 and ma20 > 0:

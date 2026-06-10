@@ -7,6 +7,23 @@
 
 ## [Unreleased]
 
+### 修复
+
+- **估值分析股息率字段**：`analyze_valuation_percentile` 中误用 f115（每股收益 EPS）作为股息率，修正为 f163（股息率 TTM）+ f168 备选（`valuation_analysis.py`）
+- **反证监控净利润检查**：`check_condition_now` 从 `indicators` 获取净利润同比（永不返回），改为从 `fetch_realtime_quote().f41` 获取（`monitor.py`）
+- **加权评分乖离率方向**：负乖离（超卖）不应被扣分。新增 `bias_alert_low: +1.0`（超卖反弹），与 `bias_alert_high: -1.0`（追高风险）区分（`analyzer.py`）
+- **KDJ 集成到加权评分**：补充 KDJ 超买/超卖信号（4 档：K<10 +1.5 / K<20 +1.0 / K>80 -1.0 / K>90 -2.0），此前 k_val 虽被提取但未使用（`analyzer.py`）
+- **港股 4 位代码 secid**：`get_secid` 对港股代码补齐到 5 位后才拼 secid，修复 4 位输入导致的 API 查询失败（`market_utils.py`）
+- **美股 yfinance or fallback**：`fetch_us_realtime_quote` / `calculate_us_financial_health` 残留 `or` 运算符改为 `is not None` 判断（`us_stock.py`）
+- **美股预热浪费**：美股模式跳过北向资金预热请求，节省 API 额度（`analyzer.py`）
+
+### 改进
+
+- **对比 RSI 评分**：改为以 50 为中性点（100 - 2 × |RSI-50|），不再偏向超买（`comparison.py`）
+- **风控乖离率**：负乖离（超卖）不再作为「风控警告」展示（属于机会提示，非风险）（`risk_control.py`）
+- **支撑压力位去重**：60 日与 20 日高低点比较从绝对阈值（0.01）改为相对阈值（1%），适配高价/低价股（`risk_control.py`）
+- **年化涨幅精度**：60 日 → 年化指数从 4 修正为 4.2（252/60），更接近真实交易日数（`analyzer.py`）
+
 ### 待开发
 
 - [ ] 增加多股票批量对比（3-5 只股票横向 PK）

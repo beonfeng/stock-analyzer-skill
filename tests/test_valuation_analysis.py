@@ -693,15 +693,15 @@ class TestAnalyzeValuationPercentile:
         assert result['股息率']['当前值'] == 3.5
 
     @patch('scripts.valuation_analysis.fetch_historical_valuation')
-    def test_dividend_f115_zero_is_valid(self, mock_fetch):
-        """测试 f115 为 0 时直接使用（0 是有效的股息率值）"""
+    def test_dividend_f163_primary_source(self, mock_fetch):
+        """测试 f163 是股息率的主数据源（f115 是每股收益，不应误用）"""
         mock_fetch.return_value = {'PE': [], 'PB': [], '股息率': []}
 
-        current_quote = {'f9': 20, 'f23': 2, 'f115': 0, 'f163': 3.5}
+        current_quote = {'f9': 20, 'f23': 2, 'f163': 3.5}
         result = analyze_valuation_percentile('600519', current_quote)
 
-        # f115 为 0 时直接使用，不回退到 f163
-        assert result['股息率']['当前值'] == 0
+        # f163 是股息率的主字段
+        assert result['股息率']['当前值'] == 3.5
 
 
 # ============================================================
@@ -742,7 +742,7 @@ class TestIntegration:
             current_quote = {
                 'f9': 20,    # PE
                 'f23': 2.5,  # PB
-                'f115': 2.0, # 股息率
+                'f163': 2.0, # 股息率
             }
 
             result = analyze_valuation_percentile('600519', current_quote)

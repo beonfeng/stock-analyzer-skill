@@ -173,9 +173,9 @@ def analyze_valuation_percentile(code, current_quote, years=5, kline_data=None):
     # 1. 提取当前估值
     current_pe = _safe_float(current_quote.get("f9", 0))
     current_pb = _safe_float(current_quote.get("f23", 0))
-    # 股息率在实时行情中可能不在标准字段中，尝试多种可能
-    f115 = current_quote.get("f115")
-    current_dividend = _safe_float(f115 if f115 is not None else current_quote.get("f163", 0))
+    # 股息率：优先从 f163（股息率 TP:2 格式）获取，f168 为备选（分红送转）
+    # 注意：f115 是「每股收益」而非股息率，不要误用
+    current_dividend = _safe_float(current_quote.get("f163", 0)) or _safe_float(current_quote.get("f168", 0))
 
     # 2. 获取历史估值数据（如果已提供 kline_data，跳过重复请求）
     if kline_data is not None and not kline_data.empty:

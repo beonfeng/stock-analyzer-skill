@@ -138,7 +138,7 @@ def parse_counter_evidence(content: str) -> List[Dict[str, Any]]:
     return conditions
 
 
-def check_condition_now(condition: Dict[str, Any], indicators: Dict, fund_flow: Dict) -> Dict[str, Any]:
+def check_condition_now(condition: Dict[str, Any], indicators: Dict, fund_flow: Dict, quote: Dict = None) -> Dict[str, Any]:
     """
     检查单个反证条件当前是否已触发。
 
@@ -180,8 +180,8 @@ def check_condition_now(condition: Dict[str, Any], indicators: Dict, fund_flow: 
             result["detail"] = f"{'已站上' if price > ma_value else '未站上'}"
 
     elif ctype == "profit_growth":
-        # 尝试从行情数据获取净利润同比（f41 字段）
-        profit_growth = indicators.get("净利润同比", 0)
+        # 从实时行情获取净利润同比（quote.f41 字段）
+        profit_growth = safe_num(quote.get("f41", 0)) if quote else 0
         if profit_growth != 0:
             result["current_value"] = f"净利润同比={profit_growth:.1f}%"
             if condition["direction"] == "bearish":
@@ -348,6 +348,7 @@ def monitor_reports(report_dir: str, codes: Optional[List[str]] = None, days: Op
 
         # 获取实时数据
         try:
+            quote = fetch_realtime_quote(code)
             df = fetch_kline(code, days=120)
             indicators = calculate_indicators(df)
             fund_flow = fetch_fund_flow(code)
@@ -367,7 +368,7 @@ def monitor_reports(report_dir: str, codes: Optional[List[str]] = None, days: Op
         checked = []
         triggered_count = 0
         for cond in conditions:
-            check = check_condition_now(cond, indicators, fund_flow)
+            check = check_condition_now(cond, indicators, fund_flow, quote)
             checked.append({
                 **cond,
                 "triggered": check["triggered"],
