@@ -298,9 +298,18 @@ def fetch_kline_tencent(code, days=500):
         return None
 
     df = df.sort_values("日期").reset_index(drop=True)
+
+    # 补全腾讯 K 线不提供的字段
+    # 成交额：收盘价 × 成交量（近似，实际应为均价×成交量）
+    df["成交额"] = (df["收盘"] * df["成交量"]).astype(float)
+    # 振幅：(最高 - 最低) / 前日收盘 × 100
     if len(df) > 1:
         prev = df["收盘"].shift(1)
         df["涨跌幅"] = ((df["收盘"] - prev) / prev * 100).fillna(0).round(2)
+        df["振幅"] = ((df["最高"] - df["最低"]) / prev * 100).fillna(0).round(2)
+    else:
+        df["涨跌幅"] = 0.0
+        df["振幅"] = 0.0
 
     df["_source"] = "腾讯财经"
     return df
@@ -361,9 +370,16 @@ def fetch_kline_sina(code, days=500):
         return None
 
     df = df.sort_values("日期").reset_index(drop=True)
+
+    # 补全新浪 K 线不提供的字段
+    df["成交额"] = (df["收盘"] * df["成交量"]).astype(float)
     if len(df) > 1:
         prev = df["收盘"].shift(1)
         df["涨跌幅"] = ((df["收盘"] - prev) / prev * 100).fillna(0).round(2)
+        df["振幅"] = ((df["最高"] - df["最低"]) / prev * 100).fillna(0).round(2)
+    else:
+        df["涨跌幅"] = 0.0
+        df["振幅"] = 0.0
 
     df["_source"] = "新浪财经"
     return df

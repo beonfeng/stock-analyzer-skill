@@ -297,20 +297,20 @@ class TestEstimateZoneFromValue:
         assert _estimate_zone_from_value("PE", -10) == "亏损"
 
     def test_pe_low(self):
-        """PE < 15 → 低估"""
-        assert _estimate_zone_from_value("PE", 10) == "低估（全市场经验判断，需结合行业特性）"
+        """PE < 15 → 低估（通用阈值）"""
+        assert _estimate_zone_from_value("PE", 10) == "低估（全市场通用）"
 
     def test_pe_reasonable(self):
-        """15 <= PE < 25 → 合理"""
-        assert _estimate_zone_from_value("PE", 20) == "合理（全市场经验判断，需结合行业特性）"
+        """15 <= PE < 25 → 合理（通用阈值）"""
+        assert _estimate_zone_from_value("PE", 20) == "合理（全市场通用）"
 
     def test_pe_reasonable_high(self):
-        """25 <= PE < 40 → 合理偏高"""
-        assert _estimate_zone_from_value("PE", 30) == "合理偏高（全市场经验判断，需结合行业特性）"
+        """25 <= PE < 40 → 合理偏高（通用阈值）"""
+        assert _estimate_zone_from_value("PE", 30) == "合理偏高（全市场通用）"
 
     def test_pe_overvalued(self):
-        """PE >= 40 → 高估"""
-        assert _estimate_zone_from_value("PE", 50) == "高估（全市场经验判断，需结合行业特性）"
+        """PE >= 40 → 高估（通用阈值）"""
+        assert _estimate_zone_from_value("PE", 50) == "高估（全市场通用）"
 
     # === PB 经验判断 ===
 
@@ -319,24 +319,24 @@ class TestEstimateZoneFromValue:
         assert _estimate_zone_from_value("PB", -1) == "净资产为负"
 
     def test_pb_below_1(self):
-        """PB < 1 → 破净"""
-        assert _estimate_zone_from_value("PB", 0.8) == "破净（经验判断）"
+        """PB < 1 → 破净（通用阈值）"""
+        assert _estimate_zone_from_value("PB", 0.8) == "破净（全市场通用）"
 
     def test_pb_low(self):
-        """1 <= PB < 2 → 低估"""
-        assert _estimate_zone_from_value("PB", 1.5) == "低估（经验判断）"
+        """1 <= PB < 2 → 低估（通用阈值）"""
+        assert _estimate_zone_from_value("PB", 1.5) == "低估（全市场通用）"
 
     def test_pb_reasonable(self):
-        """2 <= PB < 4 → 合理"""
-        assert _estimate_zone_from_value("PB", 3) == "合理（经验判断）"
+        """2 <= PB < 4 → 合理（通用阈值）"""
+        assert _estimate_zone_from_value("PB", 3) == "合理（全市场通用）"
 
     def test_pb_reasonable_high(self):
-        """4 <= PB < 8 → 合理偏高"""
-        assert _estimate_zone_from_value("PB", 6) == "合理偏高（经验判断）"
+        """4 <= PB < 8 → 合理偏高（通用阈值）"""
+        assert _estimate_zone_from_value("PB", 6) == "合理偏高（全市场通用）"
 
     def test_pb_overvalued(self):
-        """PB >= 8 → 高估"""
-        assert _estimate_zone_from_value("PB", 10) == "高估（经验判断）"
+        """PB >= 8 → 高估（通用阈值）"""
+        assert _estimate_zone_from_value("PB", 10) == "高估（全市场通用）"
 
     # === 股息率经验判断 ===
 
@@ -350,19 +350,19 @@ class TestEstimateZoneFromValue:
 
     def test_dividend_low(self):
         """股息率 < 1% → 偏低"""
-        assert _estimate_zone_from_value("股息率", 0.5) == "偏低（经验判断）"
+        assert _estimate_zone_from_value("股息率", 0.5) == "偏低"
 
     def test_dividend_reasonable(self):
         """1% <= 股息率 < 3% → 合理"""
-        assert _estimate_zone_from_value("股息率", 2) == "合理（经验判断）"
+        assert _estimate_zone_from_value("股息率", 2) == "合理"
 
     def test_dividend_high(self):
         """3% <= 股息率 < 5% → 较高"""
-        assert _estimate_zone_from_value("股息率", 4) == "较高（经验判断）"
+        assert _estimate_zone_from_value("股息率", 4) == "较高"
 
     def test_dividend_very_high(self):
         """股息率 >= 5% → 高股息"""
-        assert _estimate_zone_from_value("股息率", 6) == "高股息（经验判断）"
+        assert _estimate_zone_from_value("股息率", 6) == "高股息"
 
     # === 特殊情况 ===
 
@@ -373,6 +373,43 @@ class TestEstimateZoneFromValue:
     def test_unknown_metric(self):
         """未知指标 → 数据不足"""
         assert _estimate_zone_from_value("未知指标", 50) == "数据不足"
+
+    # === 行业差异化阈值 ===
+
+    def test_bank_pb_1_is_reasonable(self):
+        """银行 PB=1.0 合理（通用阈值会说破净）"""
+        assert "合理" in _estimate_zone_from_value("PB", 1.0, "银行行业")
+
+    def test_bank_pe_7_is_reasonable(self):
+        """银行 PE=7 合理（通用阈值会说低估）"""
+        assert "合理" in _estimate_zone_from_value("PE", 7, "银行行业")
+
+    def test_liquor_pe_30_is_reasonable(self):
+        """白酒 PE=30 合理（通用阈值会说合理偏高）"""
+        assert "合理" in _estimate_zone_from_value("PE", 30, "白酒行业")
+
+    def test_liquor_pb_7_is_reasonable(self):
+        """白酒 PB=7 合理（通用阈值会说高估）"""
+        assert "合理" in _estimate_zone_from_value("PB", 7, "白酒行业")
+
+    def test_appliance_pb_28_is_reasonable(self):
+        """家电 PB=2.8 合理（美的集团典型案例）"""
+        result = _estimate_zone_from_value("PB", 2.79, "家电行业")
+        assert "合理" in result
+
+    def test_appliance_pe_15_is_reasonable(self):
+        """家电 PE=15 合理"""
+        result = _estimate_zone_from_value("PE", 14.64, "家电行业")
+        assert "合理" in result
+
+    def test_semiconductor_pe_45_is_reasonable(self):
+        """半导体 PE=45 合理（通用阈值会说高估）"""
+        assert "合理" in _estimate_zone_from_value("PE", 45, "半导体行业")
+
+    def test_unknown_industry_falls_back(self):
+        """未知行业回退到通用阈值"""
+        assert _estimate_zone_from_value("PE", 10, "未知行业XYZ") == "低估（全市场通用）"
+        assert _estimate_zone_from_value("PB", 1.5, "未知行业XYZ") == "低估（全市场通用）"
 
 
 # ============================================================

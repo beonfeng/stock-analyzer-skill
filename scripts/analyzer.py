@@ -874,6 +874,21 @@ def calculate_financial_health(quote, financial_data):
     red_flags = []
     warnings = []
 
+    # 检测数据是否齐全：PE+PB+ROE+毛利率+营收+净利润同比+负债率 7 项中至少 3 项非零才有效
+    data_indicators = [pe, pb, roe, gross_margin, revenue, profit_growth, debt_ratio]
+    valid_count = sum(1 for v in data_indicators if v != 0)
+    if valid_count < 3:
+        result["排雷红灯"] = red_flags
+        result["排雷预警"] = ["财务数据不全（备选数据源不提供完整财务指标），部分检查已跳过"]
+        result["PE"] = pe
+        result["PB"] = pb
+        result["ROE"] = roe
+        result["毛利率"] = gross_margin
+        result["营业收入"] = revenue
+        result["净利润同比"] = profit_growth
+        result["资产负债率"] = debt_ratio
+        return result
+
     # 1. 负债率检查
     if debt_ratio > 70:
         red_flags.append(f"资产负债率 {debt_ratio:.1f}% 过高（>70%）")
@@ -910,6 +925,8 @@ def calculate_rating(indicators, financial_health, fund_flow):
     ma60 = indicators.get("MA60", 0)
     dif = indicators.get("DIF", 0)
     dea = indicators.get("DEA", 0)
+    dif_prev = indicators.get("DIF_prev")
+    dea_prev = indicators.get("DEA_prev")
 
     trend_score = 0
     if price > ma5 > ma20:
@@ -918,9 +935,14 @@ def calculate_rating(indicators, financial_health, fund_flow):
     if price > ma60:
         trend_score += 0.5
         details.append("价格在60日均线上方 +0.5")
-    if dif > dea:
+    # 真正的金叉穿越检测（与 calculate_weighted_score 保持一致）
+    if (dif_prev is not None and dea_prev is not None
+            and dif_prev <= dea_prev and dif > dea):
         trend_score += 0.5
-        details.append("MACD金叉 +0.5")
+        details.append("MACD金叉（真实上穿） +0.5")
+    elif dif > dea:
+        trend_score += 0.25
+        details.append("MACD处于多头区域 +0.25")
     score += trend_score
 
     # 2. 超买超卖评分（0-1分）
@@ -937,12 +959,18 @@ def calculate_rating(indicators, financial_health, fund_flow):
     if fund_flow:
         main_today = safe_num(fund_flow.get("今日", {}).get("f62", 0))
         main_5d = safe_num(fund_flow.get("5日", {}).get("f62", 0))
+        # 检查是否来自备选源（无多日拆分数据）
+        is_alt_source = bool(fund_flow.get("今日", {}).get("_source", ""))
         if main_today > 0 and main_5d > 0:
             score += 1
             details.append("主力资金持续流入 +1")
         elif main_today > 0:
-            score += 0.5
-            details.append("主力资金今日流入 +0.5")
+            if is_alt_source:
+                score += 0.75  # 备选源缺乏多日数据，给稍低于满分的评价
+                details.append("主力资金今日流入（多日数据不可用） +0.75")
+            else:
+                score += 0.5
+                details.append("主力资金今日流入 +0.5")
         elif main_today < 0 and main_5d < 0:
             score -= 0.5
             details.append("主力资金持续流出 -0.5")
@@ -950,7 +978,13 @@ def calculate_rating(indicators, financial_health, fund_flow):
     # 4. 财务健康评分（0-1分）
     if financial_health:
         red_flags = financial_health.get("排雷红灯", [])
-        if len(red_flags) == 0:
+        warnings = financial_health.get("排雷预警", [])
+        # 检测是否为数据不全（备选源不提供财务指标）
+        has_incomplete = any("数据不全" in w for w in warnings)
+        if has_incomplete:
+            # 数据不全时不加减分，仅标注
+            details.append("财务数据不全，部分指标无法评估")
+        elif len(red_flags) == 0:
             score += 1
             details.append("财务排雷通过 +1")
         elif len(red_flags) <= 1:
@@ -1301,9 +1335,14 @@ def _section_market_overview(ctx):
     ]:
         v = last.get(key, "-")
         if isinstance(v, (int, float)):
-            if "量" in label: v = fmt_num(v)
-            elif "额" in label: v = fmt_num(v)
-            elif "幅" in label or "跌幅" in label or "手" in label: v = f"{v}%"
+            if v == 0 and "跌幅" not in label and "量" not in label and "额" not in label:
+                v = "-"  # 0 值对于振幅/换手率通常意味着数据缺失
+            elif "量" in label:
+                v = fmt_num(v)
+            elif "额" in label:
+                v = fmt_num(v) if v > 0 else "-"
+            elif "幅" in label or "跌幅" in label or "手" in label:
+                v = f"{v:.2f}%"
         L.append(f"| {label} | {v} | {desc} |")
 
     # 涨跌幅统计
@@ -1488,7 +1527,11 @@ def _section_fund_flow(ctx):
                 L.append("|------|--------|------|------|")
                 for fk, pk, label in field_labels:
                     val = safe_num(data.get(fk, 0))
-                    pct = data.get(pk, "-")
+                    raw_pct = data.get(pk)
+                    if raw_pct is not None and raw_pct != 0 and str(raw_pct).strip() not in ("", "-", "N/A"):
+                        pct = f"{safe_num(raw_pct):.2f}%"
+                    else:
+                        pct = "-"
                     desc = "资金看好" if val > 0 else "资金撤离" if val < 0 else "持平"
                     L.append(f"| {label} | {fmt_num(val)} | {pct} | {desc} |")
             else:
@@ -1538,13 +1581,15 @@ def _section_fundamentals(ctx):
             ("净利润同比", "f41", "净利润同比增长率"),
             ("资产负债率", "f34", "总负债/总资产，越高财务风险越大"),
         ]:
-            v = ctx.quote.get(key, "-")
-            if isinstance(v, (int, float)):
-                # 如果值超过1000，可能是原始数值而非百分比，显示为金额
+            raw = ctx.quote.get(key)
+            if raw is not None and raw != 0 and str(raw).strip() not in ("", "-", "N/A", "--"):
+                v = safe_num(raw)
                 if abs(v) > 1000:
                     v = fmt_num(v)
                 else:
                     v = f"{v:.2f}%"
+            else:
+                v = "-"
             L.append(f"| {label} | {v} | {desc} |")
     else:
         L.append("> 暂无基本面数据\n")
@@ -1839,8 +1884,10 @@ def _section_counter_evidence(ctx):
         profit_growth = ctx.financial_health.get("净利润同比", 0)
         if profit_growth > 0:
             L.append(f"4. 下一季度净利润同比转负（当前 {profit_growth:.1f}%）")
-        else:
+        elif profit_growth < 0:
             L.append(f"4. 净利润同比继续下滑（当前 {profit_growth:.1f}%）")
+        else:
+            L.append("4. 净利润同比数据暂缺，待季报更新后补充")
 
     L.append("5. 主力资金连续 5 日以上净流出")
     L.append("6. 行业板块排名跌出前 30")
@@ -1853,8 +1900,12 @@ def _section_counter_evidence(ctx):
     L.append(f"| MACD信号 | {'金叉' if ctx.indicators.get('DIF',0) > ctx.indicators.get('DEA',0) else '死叉'} | K线数据 | 每日 |")
     L.append(f"| 主力资金 | {'流入' if ctx.fund_flow and safe_num(ctx.fund_flow.get('今日',{}).get('f62',0)) > 0 else '流出'} | 资金流向 | 每日 |")
     if ctx.financial_health:
-        L.append(f"| 净利润增速 | {ctx.financial_health.get('净利润同比', '-')} | 财报 | 季度 |")
-        L.append(f"| 资产负债率 | {ctx.financial_health.get('资产负债率', '-')} | 财报 | 季度 |")
+        pg = ctx.financial_health.get('净利润同比')
+        dr = ctx.financial_health.get('资产负债率')
+        pg_display = f"{pg:.1f}%" if isinstance(pg, (int, float)) and pg != 0 else "-"
+        dr_display = f"{dr:.1f}%" if isinstance(dr, (int, float)) and dr != 0 else "-"
+        L.append(f"| 净利润增速 | {pg_display} | 财报 | 季度 |")
+        L.append(f"| 资产负债率 | {dr_display} | 财报 | 季度 |")
 
     return L
 
@@ -2161,7 +2212,9 @@ def analyze_stock(code, output_dir="."):
         tick_request_queue("情感+财务")
 
         print("[11] 分析估值分位数...")
-        valuation_percentile = analyze_valuation_percentile(code, quote, years=5, kline_data=df_hist)
+        # 提取行业信息用于差异化估值判断
+        stock_industry = (company_profile.get('基本信息', {}) or {}).get('所属行业', '')
+        valuation_percentile = analyze_valuation_percentile(code, quote, years=5, kline_data=df_hist, industry=stock_industry)
         tick_request_queue("估值分位")
 
         # ── 渐进降级：Tier <3 时跳过行业对比 ──

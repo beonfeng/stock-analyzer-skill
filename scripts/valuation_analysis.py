@@ -19,6 +19,87 @@ from .utils import _http_get_safe, safe_num as _safe_float
 from .market_utils import get_market_info, get_secid
 
 
+# ============================================================
+# 行业差异化估值阈值
+# ============================================================
+# 不同行业的 PB/PE 合理区间差异巨大（银行 PB=0.8 合理，白酒 PB=6 也合理）
+# 以下阈值基于 A 股各行业历史估值中枢设定
+
+_INDUSTRY_VALUATION = {
+    # 行业关键词 → (PE合理下限, PE合理上限, PB合理下限, PB合理上限)
+    "银行":    (5, 10,  0.5, 1.2),
+    "保险":    (8, 15,  0.8, 1.5),
+    "证券":    (12, 22, 1.0, 2.0),
+    "房地产":  (8, 15,  0.5, 1.5),
+    "家电":    (12, 22, 1.5, 4.0),
+    "白酒":    (20, 40, 3.0, 10.0),
+    "饮料":    (20, 38, 3.0, 8.0),
+    "食品":    (18, 35, 2.5, 7.0),
+    "半导体":  (30, 55, 2.5, 8.0),
+    "芯片":    (30, 55, 2.5, 8.0),
+    "电子":    (20, 40, 1.5, 5.0),
+    "软件":    (25, 50, 2.0, 7.0),
+    "计算机":  (25, 50, 2.0, 7.0),
+    "医药":    (25, 45, 2.0, 6.0),
+    "医疗":    (25, 45, 2.0, 6.0),
+    "新能源":  (15, 35, 1.5, 5.0),
+    "光伏":    (12, 28, 1.0, 4.0),
+    "锂电池":  (15, 30, 1.5, 5.0),
+    "汽车":    (10, 22, 1.0, 3.0),
+    "整车":    (8, 18,  0.8, 2.5),
+    "钢铁":    (8, 15,  0.6, 1.5),
+    "煤炭":    (8, 15,  0.8, 2.0),
+    "有色":    (12, 25, 1.0, 3.0),
+    "化工":    (10, 20, 1.0, 2.5),
+    "建筑":    (6, 12,  0.5, 1.5),
+    "建材":    (10, 20, 1.0, 2.5),
+    "电力":    (12, 22, 1.0, 2.5),
+    "公用事业":(12, 20, 1.0, 2.0),
+    "交通运输":(10, 18, 1.0, 2.0),
+    "通信":    (15, 30, 1.5, 4.0),
+    "传媒":    (15, 30, 1.5, 4.0),
+    "军工":    (25, 50, 2.0, 6.0),
+    "农业":    (15, 30, 1.5, 3.5),
+    "零售":    (12, 25, 1.0, 3.0),
+    "旅游":    (18, 35, 2.0, 5.0),
+}
+
+# 全市场通用阈值（无法匹配行业时使用）
+_DEFAULT_PE_ZONES = [
+    (15, "低估"),
+    (25, "合理"),
+    (40, "合理偏高"),
+]
+_DEFAULT_PB_ZONES = [
+    (1.0, "破净或接近"),
+    (2.0, "低估"),
+    (4.0, "合理"),
+    (8.0, "合理偏高"),
+]
+
+
+def _match_industry(industry_name):
+    """根据行业名称匹配行业估值配置，返回 (pe_lo, pe_hi, pb_lo, pb_hi) 或 None"""
+    if not industry_name:
+        return None
+    for keyword, thresholds in _INDUSTRY_VALUATION.items():
+        if keyword in industry_name:
+            return thresholds
+    return None
+
+
+def _get_zone_for_industry(value, low, high, below_low_label, mid_label, above_high_label):
+    """通用区间判断辅助：低/中/高 三档，带行业定制标签"""
+    if value <= 0:
+        return "数据缺失" if value == 0 else "亏损/净资产为负"
+    if value < low:
+        return below_low_label
+    elif value <= high:
+        return mid_label
+    else:
+        return above_high_label
+
+
 def calculate_percentile(current_value, historical_values):
     """
     计算当前值在历史序列中的百分位。
@@ -131,13 +212,13 @@ def fetch_historical_valuation(code, years=5):
     return {'PE': [], 'PB': [], '股息率': []}
 
 
-def analyze_valuation_percentile(code, current_quote, years=5, kline_data=None):
+def analyze_valuation_percentile(code, current_quote, years=5, kline_data=None, industry=None):
     """
     估值分位数分析主函数。
 
     流程：
     1. 从 current_quote 提取当前 PE/PB/股息率
-    2. 获取历史估值数据
+    2. 获取历史估值数据（当前 API 不返回历史序列，使用行业经验判断）
     3. 计算分位数
     4. 返回完整分析结果
 
@@ -146,7 +227,8 @@ def analyze_valuation_percentile(code, current_quote, years=5, kline_data=None):
         current_quote: 当前行情字典（来自 fetch_realtime_quote）
             需包含 'f9'（PE）、'f23'（PB）等字段
         years: 历史回溯年数（默认 5）
-        kline_data: 已获取的 K 线 DataFrame（可选），提供时避免重复请求
+        kline_data: 已获取的 K 线 DataFrame（可选）
+        industry: 所属行业名称（如 '家电行业'），用于行业差异化估值判断
 
     Returns:
         dict: {
@@ -166,7 +248,6 @@ def analyze_valuation_percentile(code, current_quote, years=5, kline_data=None):
 
     # 2. 获取历史估值数据（如果已提供 kline_data，跳过重复请求）
     if kline_data is not None and not kline_data.empty:
-        # 已有 K 线数据，直接使用（当前 API 不返回 PE/PB 历史序列，返回空结果）
         historical = {'PE': [], 'PB': [], '股息率': []}
     else:
         historical = fetch_historical_valuation(code, years=years)
@@ -180,7 +261,6 @@ def analyze_valuation_percentile(code, current_quote, years=5, kline_data=None):
         ("股息率", current_dividend, historical.get('股息率', [])),
     ]:
         if hist_list and len(hist_list) > 0:
-            # 有历史数据，计算分位数
             try:
                 percentile = calculate_percentile(current_val, hist_list)
                 zone = get_valuation_zone(percentile)
@@ -188,9 +268,9 @@ def analyze_valuation_percentile(code, current_quote, years=5, kline_data=None):
                 percentile = None
                 zone = "数据不足"
         else:
-            # 无历史数据，使用经验判断
+            # 无历史数据，使用行业差异化经验判断
             percentile = None
-            zone = _estimate_zone_from_value(metric_name, current_val)
+            zone = _estimate_zone_from_value(metric_name, current_val, industry)
 
         result[metric_name] = {
             '当前值': current_val,
@@ -204,61 +284,82 @@ def analyze_valuation_percentile(code, current_quote, years=5, kline_data=None):
     return result
 
 
-def _estimate_zone_from_value(metric_name, value):
+def _estimate_zone_from_value(metric_name, value, industry=None):
     """
-    当无法获取历史分位数时，基于绝对值进行经验判断。
+    基于绝对值进行经验判断（无历史分位数时的回退方案）。
 
-    这是一个简化的估算方法，仅在无法获取历史数据时使用。
-    不同行业的合理估值差异很大（如银行 PE 通常 5-8，科技 PE 可达 40+），
-    此方法仅提供粗略参考，不区分行业特性。
+    优先使用行业差异化阈值（_INDUSTRY_VALUATION），无法匹配行业时
+    使用全市场通用阈值。
 
     Args:
         metric_name: 指标名称（'PE'/'PB'/'股息率'）
         value: 当前值
+        industry: 所属行业名称（如 '家电行业'），用于匹配差异化阈值
 
     Returns:
         str: 估值区间描述
     """
     if metric_name == "股息率":
-        # 股息率允许为 0，需要优先判断
         if value <= 0:
             return "无分红"
         elif value < 1:
-            return "偏低（经验判断）"
+            return "偏低"
         elif value < 3:
-            return "合理（经验判断）"
+            return "合理"
         elif value < 5:
-            return "较高（经验判断）"
+            return "较高"
         else:
-            return "高股息（经验判断）"
+            return "高股息"
 
     if abs(value) < 1e-6 or (isinstance(value, float) and np.isnan(value)):
         return "数据缺失"
 
+    # 尝试匹配行业差异化阈值
+    ind_thresholds = _match_industry(industry) if industry else None
+
     if metric_name == "PE":
         if value < 0:
             return "亏损"
-        elif value < 15:
-            return "低估（全市场经验判断，需结合行业特性）"
+        if ind_thresholds:
+            pe_lo, pe_hi, _, _ = ind_thresholds
+            return _get_zone_for_industry(
+                value, pe_lo, pe_hi,
+                f"低估（{industry}PE<{pe_lo}）",
+                f"合理（{industry}PE {pe_lo}-{pe_hi}）",
+                f"高估（{industry}PE>{pe_hi}）",
+            )
+        # 通用阈值
+        if value < 15:
+            return "低估（全市场通用）"
         elif value < 25:
-            return "合理（全市场经验判断，需结合行业特性）"
+            return "合理（全市场通用）"
         elif value < 40:
-            return "合理偏高（全市场经验判断，需结合行业特性）"
+            return "合理偏高（全市场通用）"
         else:
-            return "高估（全市场经验判断，需结合行业特性）"
+            return "高估（全市场通用）"
+
     elif metric_name == "PB":
         if value < 0:
             return "净资产为负"
-        elif value < 1:
-            return "破净（经验判断）"
+        if ind_thresholds:
+            _, _, pb_lo, pb_hi = ind_thresholds
+            return _get_zone_for_industry(
+                value, pb_lo, pb_hi,
+                f"低估（{industry}PB<{pb_lo}）",
+                f"合理（{industry}PB {pb_lo}-{pb_hi}）",
+                f"高估（{industry}PB>{pb_hi}）",
+            )
+        # 通用阈值
+        if value < 1:
+            return "破净（全市场通用）"
         elif value < 2:
-            return "低估（经验判断）"
+            return "低估（全市场通用）"
         elif value < 4:
-            return "合理（经验判断）"
+            return "合理（全市场通用）"
         elif value < 8:
-            return "合理偏高（经验判断）"
+            return "合理偏高（全市场通用）"
         else:
-            return "高估（经验判断）"
+            return "高估（全市场通用）"
 
     return "数据不足"
 
