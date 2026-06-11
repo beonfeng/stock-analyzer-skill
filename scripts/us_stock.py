@@ -99,7 +99,7 @@ def fetch_us_realtime_quote(ticker: str) -> dict:
     stock = yf.Ticker(ticker)
     info = stock.info
 
-    if not info or ("regularMarketPrice" not in info and "currentPrice" not in info):
+    if not info or (info.get("regularMarketPrice") is None and info.get("currentPrice") is None):
         # 尝试用 fast_info 获取
         try:
             fast = stock.fast_info
@@ -139,7 +139,7 @@ def fetch_us_realtime_quote(ticker: str) -> dict:
         "f40": revenue,  # 营收
         "f41": profit_growth,  # 净利润同比
         "f34": debt_ratio,  # 资产负债率
-        "market": "us",
+        "market": "US",
         "_currency": info.get("currency", "USD"),
         "_exchange": info.get("exchange", ""),
         "_sector": info.get("sector", ""),

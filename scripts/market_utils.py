@@ -108,12 +108,12 @@ def convert_price(raw_price, market):
     if math.isnan(price) or math.isinf(price):
         return 0.0
 
-    # 根据市场类型除以对应除数（复用 get_market_info 的逻辑）
-    # HK=1000（港币厘）, SH/SZ/BJ=100（分）, US=1（美元）
-    divisor_map = {'HK': 1000, 'SH': 100, 'SZ': 100, 'BJ': 100, 'US': 1}
-    if market not in divisor_map:
-        raise ValueError(f"无效的市场类型: {market}")
-    return price / divisor_map[market]
+    # 市场代码 → 价格除数的映射
+    _DIVISOR_FROM_MARKET = {'HK': 1000, 'SH': 100, 'SZ': 100, 'BJ': 100, 'US': 1}
+    divisor = _DIVISOR_FROM_MARKET.get(market)
+    if divisor is None:
+        raise ValueError(f"无效的 market 代码: {market}")
+    return price / divisor
 
 
 def is_hk_stock(code):
@@ -181,6 +181,9 @@ def get_secid(code, market_id):
         >>> get_secid('600519', 1)
         '1.600519'
     """
+    ALLOWED = {0, 1, 105, 116}
+    if market_id not in ALLOWED:
+        raise ValueError(f"Unknown market_id: {market_id}")
     # 港股代码补齐到 5 位（API 要求 secid 中代码为 5 位格式）
     if market_id == 116:
         code = str(code).zfill(5)

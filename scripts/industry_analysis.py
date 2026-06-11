@@ -92,7 +92,7 @@ def _find_industry_from_board(code, market_code):
     boards = j.get("data", {}).get("diff", [])
     # 遍历行业板块，查找股票所属行业（限制最多遍历 30 个板块，避免过多请求）
     # 性能影响：每个板块需一次 API 请求获取成员列表，最多 30 次串行请求
-    for board in boards[:30]:
+    for board in boards[:5]:
         board_code = board.get("f12", "")
         if not board_code:
             continue
@@ -311,7 +311,7 @@ def analyze_fund_flow_comparison(code, peers, industry_code=None):
                             '今日主力净流入': _safe_float(item.get("f62", 0)),
                             '5日主力净流入': _safe_float(item.get("f164", 0)),
                         })
-        except Exception as e:
+        except (ConnectionError, TimeoutError, OSError, ValueError) as e:
             print(f"  [警告] 批量资金流向查询失败: {e}，回退到逐股查询")
 
     # 方法2（回退）：逐股查询（当批量查询不可用或失败时）
@@ -387,7 +387,7 @@ def _get_market_id(code):
         _, market_id, _ = get_market_info(code)
         return market_id
     except ValueError:
-        return 0
+        return 0  # 无法识别的代码，返回 0 让调用方 fallback 处理
 
 
 def analyze_industry_sentiment(industry_code):
@@ -566,7 +566,7 @@ def analyze_leader_premium(code, peers):
     # 计算行业平均 PE（排除极端值）
     pe_values = [p['PE'] for p in valid_peers if 0 < p['PE'] < 1000]
     if pe_values:
-        avg_pe = sum(pe_values) / len(pe_values)
+        avg_pe = sum(pe_values) / len(pe_values)  # 行业 PE 均值（已过滤亏损和无数据个股）
         result['行业平均PE'] = round(avg_pe, 2)
 
         # 计算溢价率

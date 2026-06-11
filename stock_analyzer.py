@@ -34,24 +34,30 @@ from scripts.market_utils import is_us_stock
 
 
 def _export_report(report_path: str, fmt: str):
-    """根据格式导出报告（HTML/PDF）"""
-    from pathlib import Path
-    p = Path(report_path)
-    md_content = p.read_text(encoding="utf-8")
-    title = p.stem  # 文件名作为标题
+    try:
+        from pathlib import Path
+        p = Path(report_path)
+        if not p.exists():
+            print(f"  [警告] 报告文件不存在: {report_path}")
+            return report_path
+        md_content = p.read_text(encoding="utf-8")
+        title = p.stem  # 文件名作为标题
 
-    if fmt == "html":
-        html_content = md_to_html(md_content, title)
-        html_path = p.with_suffix(".html")
-        html_path.write_text(html_content, encoding="utf-8")
-        print(f"  [HTML] {html_path.name}")
-        return str(html_path)
-    elif fmt == "pdf":
-        pdf_path = p.with_suffix(".pdf")
-        actual_path = md_to_pdf(md_content, str(pdf_path), title)
-        print(f"  [{'PDF' if actual_path.endswith('.pdf') else 'HTML降级'}] {Path(actual_path).name}")
-        return actual_path
-    return report_path
+        if fmt == "html":
+            html_content = md_to_html(md_content, title)
+            html_path = p.with_suffix(".html")
+            html_path.write_text(html_content, encoding="utf-8")
+            print(f"  [HTML] {html_path.name}")
+            return str(html_path)
+        elif fmt == "pdf":
+            pdf_path = p.with_suffix(".pdf")
+            actual_path = md_to_pdf(md_content, str(pdf_path), title)
+            print(f"  [{'PDF' if actual_path.endswith('.pdf') else 'HTML降级'}] {Path(actual_path).name}")
+            return actual_path
+        return report_path
+    except Exception as e:
+        print(f"  [警告] 导出 {fmt} 失败: {e}")
+        return report_path
 
 
 def cmd_analyze(args):
@@ -196,10 +202,14 @@ def generate_enhanced_comparison_report(stock_a, stock_b, result):
         L.append(f"\n### {label}. {name}（{code}）\n")
         L.append(f"| 指标 | 数值 |")
         L.append(f"|------|------|")
-        L.append(f"| 最新价 | {price} 元（{chg:+.2f}%）|")
-        L.append(f"| 市盈率 | {pe:.2f} |")
-        L.append(f"| 市净率 | {pb:.2f} |")
-        L.append(f"| 总市值 | {mv/1e8:.2f} 亿 |")
+        price_val = safe_num(price)
+        pe_val = safe_num(pe)
+        pb_val = safe_num(pb)
+        mv_val = safe_num(mv)
+        L.append(f"| 最新价 | {price_val:.2f} 元（{chg:+.2f}%）|")
+        L.append(f"| 市盈率 | {pe_val:.2f} |")
+        L.append(f"| 市净率 | {pb_val:.2f} |")
+        L.append(f"| 总市值 | {mv_val/1e8:.2f} 亿 |")
         L.append(f"| MACD | {'金叉' if indicators.get('DIF', 0) > indicators.get('DEA', 0) else '死叉'} |")
         L.append(f"| RSI6 | {indicators.get('RSI6', 50):.2f} |")
 
@@ -428,11 +438,11 @@ def main():
     # 检查是否需要添加默认子命令
     need_analyze = False
     if not args_list:
-        # 没有参数，显示帮助
         need_analyze = False
-    elif args_list[0] not in known_commands and not args_list[0].startswith('-'):
-        # 第一个参数不是已知命令也不是选项，认为是股票代码
-        need_analyze = True
+    else:
+        # Check for positionals that look like stock codes (not flags and not subcommands)
+        positionals = [a for a in args_list if not a.startswith('-') and a not in known_commands]
+        need_analyze = bool(positionals)
 
     if need_analyze:
         parse_target = ["analyze"] + args_list

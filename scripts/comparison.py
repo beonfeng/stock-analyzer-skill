@@ -35,10 +35,21 @@ def compare_two_stocks(
     score_a = 0
     score_b = 0
 
-    # 1. 估值对比（PE 越低越好）
+    # 1. 估值对比（PE 越低越好，负 PE 视为亏损/数据缺失）
     pe_a = safe_num(stock_a.get("pe", 0))
     pe_b = safe_num(stock_b.get("pe", 0))
-    pe_winner = "a" if pe_a < pe_b and pe_a > 0 else "b" if pe_b < pe_a and pe_b > 0 else "tie"
+    if pe_a <= 0 and pe_b <= 0:
+        pe_winner = "tie"  # 双方都无有效 PE 数据
+    elif pe_a <= 0:
+        pe_winner = "b"    # a 无数据，b 有数据
+    elif pe_b <= 0:
+        pe_winner = "a"    # b 无数据，a 有数据
+    elif pe_a < pe_b:
+        pe_winner = "a"
+    elif pe_b < pe_a:
+        pe_winner = "b"
+    else:
+        pe_winner = "tie"
     comparison.append({
         "dimension": "市盈率(PE)",
         "stock_a": f"{pe_a:.1f}",
@@ -51,16 +62,27 @@ def compare_two_stocks(
     elif pe_winner == "b":
         score_b += 1
 
-    # 2. PB 对比
+    # 2. PB 对比（越低越好，负 PB 视为净资产为负/数据缺失）
     pb_a = safe_num(stock_a.get("pb", 0))
     pb_b = safe_num(stock_b.get("pb", 0))
-    pb_winner = "a" if pb_a < pb_b and pb_a > 0 else "b" if pb_b < pb_a and pb_b > 0 else "tie"
+    if pb_a <= 0 and pb_b <= 0:
+        pb_winner = "tie"  # 双方都无有效 PB 数据
+    elif pb_a <= 0:
+        pb_winner = "b"    # a 无数据，b 有数据
+    elif pb_b <= 0:
+        pb_winner = "a"    # b 无数据，a 有数据
+    elif pb_a < pb_b:
+        pb_winner = "a"
+    elif pb_b < pb_a:
+        pb_winner = "b"
+    else:
+        pb_winner = "tie"
     comparison.append({
         "dimension": "市净率(PB)",
         "stock_a": f"{pb_a:.1f}",
         "stock_b": f"{pb_b:.1f}",
         "winner": pb_winner,
-        "note": "越低越便宜",
+        "note": "越低越便宜（注：PB<=0 视为净资产为负/数据缺失）",
     })
     if pb_winner == "a":
         score_a += 1
@@ -84,8 +106,8 @@ def compare_two_stocks(
         score_b += 1
 
     # 4. 涨跌幅对比
-    chg_a = stock_a.get("change_pct", 0)
-    chg_b = stock_b.get("change_pct", 0)
+    chg_a = safe_num(stock_a.get("change_pct", 0))
+    chg_b = safe_num(stock_b.get("change_pct", 0))
     chg_winner = "a" if chg_a > chg_b else "b" if chg_b > chg_a else "tie"
     comparison.append({
         "dimension": "今日涨跌",
@@ -100,8 +122,8 @@ def compare_two_stocks(
         score_b += 1
 
     # 5. RSI 对比
-    rsi_a = stock_a.get("indicators", {}).get("RSI6", 50)
-    rsi_b = stock_b.get("indicators", {}).get("RSI6", 50)
+    rsi_a = safe_num(stock_a.get("indicators", {}).get("RSI6", 50))
+    rsi_b = safe_num(stock_b.get("indicators", {}).get("RSI6", 50))
     # 以 50 为中性点，距中性点越近越好；超卖（<30）也是买入机会
     # 评分 = 100 - 2 × |RSI - 50|，使 RSI=50 得满分 100，RSI=0 或 100 得 0 分
     rsi_score_a = 100 - 2 * abs(rsi_a - 50)
@@ -120,10 +142,10 @@ def compare_two_stocks(
         score_b += 1
 
     # 6. MACD 对比
-    dif_a = stock_a.get("indicators", {}).get("DIF", 0)
-    dea_a = stock_a.get("indicators", {}).get("DEA", 0)
-    dif_b = stock_b.get("indicators", {}).get("DIF", 0)
-    dea_b = stock_b.get("indicators", {}).get("DEA", 0)
+    dif_a = safe_num(stock_a.get("indicators", {}).get("DIF", 0))
+    dea_a = safe_num(stock_a.get("indicators", {}).get("DEA", 0))
+    dif_b = safe_num(stock_b.get("indicators", {}).get("DIF", 0))
+    dea_b = safe_num(stock_b.get("indicators", {}).get("DEA", 0))
     macd_a = dif_a - dea_a
     macd_b = dif_b - dea_b
     macd_winner = "a" if macd_a > macd_b else "b" if macd_b > macd_a else "tie"
@@ -140,8 +162,8 @@ def compare_two_stocks(
         score_b += 1
 
     # 7. 综合评级对比
-    rating_a = stock_a.get("rating", {}).get("分数", 0)
-    rating_b = stock_b.get("rating", {}).get("分数", 0)
+    rating_a = safe_num(stock_a.get("rating", {}).get("分数", 0))
+    rating_b = safe_num(stock_b.get("rating", {}).get("分数", 0))
     rating_winner = "a" if rating_a > rating_b else "b" if rating_b > rating_a else "tie"
     comparison.append({
         "dimension": "综合评级",

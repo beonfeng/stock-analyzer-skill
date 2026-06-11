@@ -642,7 +642,7 @@ def _http_get(host, path, params=None, timeout=15, retries=2, use_cache=True):
                 try:
                     result = _try_single_request(fallback_host, path, params, timeout)
                     fallback_breaker.record_success()
-                    if use_cache and result:
+                    if use_cache and result is not None:
                         _set_cache(cache_key, result, path)
                     global _success_count_window
                     _success_count_window += 1
@@ -665,7 +665,7 @@ def _http_get(host, path, params=None, timeout=15, retries=2, use_cache=True):
 
             # 成功 → 清理状态
             breaker.record_success()
-            if use_cache and result:
+            if use_cache and result is not None:
                 _set_cache(cache_key, result, path)
 
             _success_count_window += 1
@@ -676,6 +676,10 @@ def _http_get(host, path, params=None, timeout=15, retries=2, use_cache=True):
             last_err = e
             _failure_count_window += 1
 
+            # JSON 解析错误不重试（数据本身有问题，非瞬态网络故障）
+            if isinstance(e, json.JSONDecodeError):
+                raise
+
             if _is_connection_error(e):
                 breaker.record_failure()
                 if not breaker.allow_request():
@@ -683,6 +687,7 @@ def _http_get(host, path, params=None, timeout=15, retries=2, use_cache=True):
                     print(f"  [熔断] {host} 断路器 OPEN（{cooldown:.0f}s），尝试故障转移...")
                     # 尝试故障转移
                     fallbacks = _get_fallback_hosts(host)
+                    fallback_success = False
                     for fallback_host in fallbacks:
                         fb = _get_or_create_breaker(fallback_host)
                         if fb.allow_request():
@@ -690,19 +695,22 @@ def _http_get(host, path, params=None, timeout=15, retries=2, use_cache=True):
                                 result = _try_single_request(fallback_host, path, params, timeout)
                                 fb.record_success()
                                 _success_count_window += 1
-                                if use_cache and result:
+                                if use_cache and result is not None:
                                     _set_cache(cache_key, result, path)
+                                fallback_success = True
                                 return result
                             except Exception:
                                 fb.record_failure()
                                 _failure_count_window += 1
-                # 连接拒绝不重试
-                raise last_err
-
-            # 其他错误 → 指数退避
-            if attempt < retries - 1:
-                wait_time = (2.0 ** (attempt + 1)) + random.uniform(1.0, 2.0)
-                time.sleep(wait_time)
+                    # 只有断路器 OPEN 且所有 fallback 都失败才 raise
+                    if not fallback_success:
+                        raise last_err
+                # 断路器未 OPEN → 连接错误可能是瞬态的，不立即 raise，继续重试循环
+            else:
+                # 非连接错误 → 指数退避重试
+                if attempt < retries - 1:
+                    wait_time = (2.0 ** (attempt + 1)) + random.uniform(1.0, 2.0)
+                    time.sleep(wait_time)
 
     raise last_err
 

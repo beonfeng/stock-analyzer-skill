@@ -293,13 +293,24 @@ def fetch_north_flow():
             rows = []
             for line in klines:
                 parts = line.split(",")
-                if len(parts) >= 6:
+                if len(parts) >= 9:  # 需要访问 parts[8]（涨跌幅），至少 9 个字段
                     rows.append({"日期": parts[0], "收盘": parts[2], "涨跌幅": parts[8]})
             result[symbol] = pd.DataFrame(rows)
         except Exception as e:
             print(f"  [警告] 北向资金({symbol})获取失败: {e}")
     memo_set("north_flow", result)
     return result
+
+
+# URL 参数白名单校验：仅允许字母数字和常见安全字符
+_URL_PARAM_RE = __import__('re').compile(r'^[A-Za-z0-9_.@\-]+$')
+
+
+def _safe_url_param(value):
+    """校验 URL 参数仅含安全字符，防止路径穿越 / 注入"""
+    if not isinstance(value, str) or not value:
+        return False
+    return bool(_URL_PARAM_RE.match(value))
 
 
 def fetch_stock_news(code):
@@ -325,7 +336,10 @@ def fetch_stock_news(code):
                 pub_date = (item.get("publishDate") or "")[:10]
                 if title:
                     info_code = item.get("infoCode", "")
-                    url = f"https://data.eastmoney.com/report/zw/stock/{info_code}.html" if info_code else ""
+                    if info_code and _safe_url_param(str(info_code)):
+                        url = f"https://data.eastmoney.com/report/zw/stock/{info_code}.html"
+                    else:
+                        url = ""
                     rows.append({
                         "新闻标题": f"[研报] {title}",
                         "发布时间": pub_date,
@@ -352,7 +366,10 @@ def fetch_stock_news(code):
             pub_date = (item.get("noticeDate") or "")[:10]
             if title:
                 art_code = item.get("art_code", "")
-                url = f"https://np-anotice-stock.eastmoney.com/api/security/ann/detail?art_code={art_code}" if art_code else ""
+                if art_code and _safe_url_param(str(art_code)):
+                    url = f"https://np-anotice-stock.eastmoney.com/api/security/ann/detail?art_code={art_code}"
+                else:
+                    url = ""
                 rows.append({
                     "新闻标题": f"[公告] {title}",
                     "发布时间": pub_date,
@@ -666,12 +683,16 @@ def resolve_stock_code(input_str):
 
     # 模糊匹配（包含关系，但输入不能为空且至少2个字符）
     if len(input_str) >= 2:
-        for name, code in _NAME_TO_CODE.items():
-            if input_str in name or name in input_str:
-                return code
+        matches = [(name, code) for name, code in _NAME_TO_CODE.items()
+                   if input_str in name or name in input_str]
+        if len(matches) == 1:
+            return matches[0][1]
+        elif len(matches) > 1:
+            names = '、'.join([m[0] for m in matches[:5]])
+            raise ValueError(f"名称「{input_str}」匹配到多只股票：{names}，请使用代码")
 
-    # 如果都找不到，返回原值（让后续处理报错）
-    return input_str
+    # 无法识别，抛出明确错误
+    raise ValueError(f"无法识别股票代码或名称：{input_str}")
 
 # 常见港股名称映射
 _HK_STOCK_NAMES = {
@@ -760,6 +781,10 @@ def calculate_indicators(df):
     indicators["DIF"] = dif.iloc[-1]
     indicators["DEA"] = dea.iloc[-1]
     indicators["MACD"] = (dif.iloc[-1] - dea.iloc[-1]) * 2
+    # 前一日的 DIF/DEA（用于检测真正的金叉/死叉而非仅当前状态）
+    if len(dif) >= 2:
+        indicators["DIF_prev"] = dif.iloc[-2]
+        indicators["DEA_prev"] = dea.iloc[-2]
 
     # KDJ
     low_min = low.rolling(9).min()
@@ -790,8 +815,11 @@ def calculate_indicators(df):
         indicators["BOLL_UP"] = (mid + 2 * std).iloc[-1]
         indicators["BOLL_DN"] = (mid - 2 * std).iloc[-1]
 
-    # ATR
-    tr = pd.concat([high - low, (high - close.shift(1)).abs(), (low - close.shift(1)).abs()], axis=1).max(axis=1)
+    # ATR (使用向量化操作，避免 pd.concat 中间 DataFrame)
+    tr_a = high - low
+    tr_b = (high - close.shift(1)).abs()
+    tr_c = (low - close.shift(1)).abs()
+    tr = np.maximum(tr_a, np.maximum(tr_b, tr_c))
     indicators["ATR14"] = tr.rolling(14).mean().iloc[-1]
 
     # 成交量均线
@@ -945,7 +973,7 @@ def calculate_rating(indicators, financial_health, fund_flow):
 
 def fmt_num(n):
     if pd.isna(n) or n == "-": return "-"
-    if abs(n) >= 1e8: return f"{n/1e8:.2f}亿"
+    if abs(n) >= 1e8: return f"{float(n)/1e8:.2f}亿"
     if abs(n) >= 1e4: return f"{n/1e4:.2f}万"
     return f"{n:,.2f}"
 
@@ -1094,8 +1122,10 @@ def _section_company_analysis(ctx):
 
     # 3. 检查是否有境外业务
     overseas = [b for b in biz if '境外' in (b.get('名称', '') or '')]
-    if overseas and (overseas[0].get('占比', 100) or 100) < 5:
-        opportunities.append(f"**海外市场**：境外收入占比仅 {(overseas[0].get('占比', 0) or 0):.1f}%，海外市场拓展潜力大")
+    if overseas:
+        overseas_pct = safe_num(overseas[0].get('占比', 100))
+        if overseas_pct > 0 and overseas_pct < 5:
+            opportunities.append(f"**海外市场**：境外收入占比仅 {overseas_pct:.1f}%，海外市场拓展潜力大")
 
     # 4. 检查毛利率趋势
     high_margin = [b for b in biz if (b.get('毛利率', 0) or 0) > 30]
@@ -1998,8 +2028,7 @@ def generate_report(code, name, df, indicators, fund_flow, north_flow, quote, ne
 # 主流程
 # ============================================================
 
-# 分析间冷却计时器
-_last_analysis_time = 0.0
+# 注：_last_analysis_time 在模块顶部定义，此处不重复声明
 
 
 def analyze_stock(code, output_dir="."):
@@ -2176,8 +2205,10 @@ def analyze_stock(code, output_dir="."):
 SIGNAL_WEIGHTS = {
     "ma_alignment_bull": 2.0,     # 均线多头排列 — 最强趋势信号，权重最高
     "ma_alignment_bear": -2.0,    # 均线空头排列 — 最强看空信号
-    "macd_golden_cross": 1.5,     # MACD 金叉 — 趋势转折确认信号
-    "macd_death_cross": -1.5,     # MACD 死叉 — 趋势转折确认信号
+    "macd_golden_cross": 1.5,     # MACD 金叉（DIF 真实上穿 DEA）— 趋势转折确认
+    "macd_death_cross": -1.5,     # MACD 死叉（DIF 真实下穿 DEA）— 趋势转折确认
+    "macd_bullish_region": 0.5,   # MACD 处于多头区域（持续状态非新交叉）— 半权重
+    "macd_bearish_region": -0.5,  # MACD 处于空头区域（持续状态非新交叉）— 半权重
     "macd_hist_positive": 0.5,    # MACD 红柱 — 多头动能辅助确认
     "macd_hist_negative": -0.5,   # MACD 绿柱 — 空头动能辅助确认
     "rsi_oversold": 1.0,          # RSI 超卖（<30）— 超卖反弹机会
@@ -2238,30 +2269,48 @@ def calculate_weighted_score(indicators: Dict[str, float]) -> Dict[str, Any]:
     volume = indicators.get("成交量", 0)
 
     # 1. 均线排列判断
+    # 提前计算间距，避免在 if/elif 分支中重复计算
+    gap_5_10 = abs(ma5 - ma10) / ma10 * 100 if ma10 > 0 else 0
+    gap_10_20 = abs(ma10 - ma20) / ma20 * 100 if ma20 > 0 else 0
     if ma5 > ma10 > ma20 > ma60:
-        # 检查间距（< 1% 不认定为有效排列）
-        gap_5_10 = abs(ma5 - ma10) / ma10 * 100 if ma10 > 0 else 0
-        gap_10_20 = abs(ma10 - ma20) / ma20 * 100 if ma20 > 0 else 0
         if gap_5_10 > 1 and gap_10_20 > 1:
             score += SIGNAL_WEIGHTS["ma_alignment_bull"]
             signals.append("均线多头排列 +2.0")
             bullish_count += 1
     elif ma5 < ma10 < ma20 < ma60:
-        gap_5_10 = abs(ma5 - ma10) / ma10 * 100 if ma10 > 0 else 0
-        gap_10_20 = abs(ma10 - ma20) / ma20 * 100 if ma20 > 0 else 0
         if gap_5_10 > 1 and gap_10_20 > 1:
             score += SIGNAL_WEIGHTS["ma_alignment_bear"]
             signals.append("均线空头排列 -2.0")
             bearish_count += 1
 
-    # 2. MACD 信号
-    if dif > dea:
+    # 2. MACD 信号（区分真正交叉与持续状态）
+    dif = indicators.get("DIF", 0)
+    dea = indicators.get("DEA", 0)
+    dif_prev = indicators.get("DIF_prev")
+    dea_prev = indicators.get("DEA_prev")
+
+    # 检测真正的金叉：DIF 从下方上穿 DEA
+    true_golden = (dif_prev is not None and dea_prev is not None
+                   and dif_prev <= dea_prev and dif > dea)
+    # 检测真正的死叉：DIF 从上方下穿 DEA
+    true_death = (dif_prev is not None and dea_prev is not None
+                  and dif_prev >= dea_prev and dif < dea)
+
+    if true_golden:
         score += SIGNAL_WEIGHTS["macd_golden_cross"]
-        signals.append("MACD金叉 +1.5")
+        signals.append("MACD金叉(真实上穿) +1.5")
+        bullish_count += 1
+    elif true_death:
+        score += SIGNAL_WEIGHTS["macd_death_cross"]
+        signals.append("MACD死叉(真实下穿) -1.5")
+        bearish_count += 1
+    elif dif > dea:
+        score += SIGNAL_WEIGHTS.get("macd_bullish_region", 0.5)
+        signals.append("MACD处于多头区域 +0.5")
         bullish_count += 1
     else:
-        score += SIGNAL_WEIGHTS["macd_death_cross"]
-        signals.append("MACD死叉 -1.5")
+        score += SIGNAL_WEIGHTS.get("macd_bearish_region", -0.5)
+        signals.append("MACD处于空头区域 -0.5")
         bearish_count += 1
 
     # MACD 柱状图
@@ -2292,6 +2341,9 @@ def calculate_weighted_score(indicators: Dict[str, float]) -> Dict[str, Any]:
         bearish_count += 1
 
     # 3.5 KDJ 信号（超买超卖）
+    # NaN 防护：KDJ 在数据不足时可能为 NaN，此时跳过信号检测
+    if pd.isna(k_val):
+        k_val = 50  # 中性值，不影响评分
     if k_val < 10:
         score += SIGNAL_WEIGHTS["kdj_deep_oversold"]
         signals.append("KDJ深度超卖(K<10) +1.5")

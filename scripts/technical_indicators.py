@@ -67,7 +67,7 @@ def detect_rsi_divergence(close, rsi, lookback=20):
     # 顶背离：后半段价格新高，但 RSI 未新高
     if second_close_max > first_close_max and second_rsi_max < first_rsi_max:
         # 根据背离幅度判断可靠性
-        price_diff = (second_close_max - first_close_max) / first_close_max
+        price_diff = (second_close_max - first_close_max) / (first_close_max + 1e-10)
         rsi_diff = (first_rsi_max - second_rsi_max) / (first_rsi_max + 1e-10)
         if price_diff > 0.05 and rsi_diff > 0.1:
             reliability = '高'
@@ -83,7 +83,7 @@ def detect_rsi_divergence(close, rsi, lookback=20):
 
     # 底背离：后半段价格新低，但 RSI 未新低
     if second_close_min < first_close_min and second_rsi_min > first_rsi_min:
-        price_diff = (first_close_min - second_close_min) / first_close_min
+        price_diff = (first_close_min - second_close_min) / (first_close_min + 1e-10)
         rsi_diff = (second_rsi_min - first_rsi_min) / (first_rsi_min + 1e-10)
         if price_diff > 0.05 and rsi_diff > 0.1:
             reliability = '高'
@@ -128,19 +128,23 @@ def analyze_macd_histogram(dif_series, dea_series):
     red_count = 0
     green_count = 0
 
-    # 从最后一天往前数连续红柱
-    for i in range(len(histogram) - 1, -1, -1):
-        if histogram.iloc[i] > 0:
-            red_count += 1
-        else:
-            break
-
-    # 从最后一天往前数连续绿柱
-    for i in range(len(histogram) - 1, -1, -1):
-        if histogram.iloc[i] < 0:
-            green_count += 1
-        else:
-            break
+    if len(histogram) > 0:
+        if histogram.iloc[-1] > 0:
+            # 连续红柱
+            for i in range(len(histogram) - 1, -1, -1):
+                if histogram.iloc[i] > 0:
+                    red_count += 1
+                else:
+                    break
+            green_count = 0
+        elif histogram.iloc[-1] < 0:
+            # 连续绿柱
+            for i in range(len(histogram) - 1, -1, -1):
+                if histogram.iloc[i] < 0:
+                    green_count += 1
+                else:
+                    break
+            red_count = 0
 
     # 柱状图斜率（最近 5 天的线性斜率）
     recent = histogram.iloc[-5:] if len(histogram) >= 5 else histogram
@@ -411,6 +415,8 @@ def calculate_extended_indicators(df, indicators):
     Returns:
         dict: 扩展指标字典，包含 RSI背离、MACD柱状图、成交量异动、K线形态、筹码分布
     """
+    if df is None or df.empty:
+        return {}
     result = {}
 
     close = df['收盘'].astype(float)

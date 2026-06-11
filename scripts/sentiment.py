@@ -5,6 +5,7 @@
 基于关键词匹配判断新闻正面/负面/中性
 """
 
+import re
 from typing import List, Dict, Any
 
 
@@ -78,12 +79,18 @@ def analyze_sentiment(news_list: List[Dict[str, Any]]) -> Dict[str, Any]:
 
         for kw in POSITIVE_KEYWORDS:
             if kw in text:
-                pos_score += POSITIVE_WEIGHTS[kw]
-                matched_pos.add(kw)
+                # 检查否定前缀（如"避免风险"、"防范下跌"）
+                pattern = re.search(r'(?:不|未|无|防止|避免|防范|抵御|应对|控制|化解)\s*' + re.escape(kw), text)
+                if not pattern:
+                    pos_score += POSITIVE_WEIGHTS[kw]
+                    matched_pos.add(kw)
         for kw in NEGATIVE_KEYWORDS:
             if kw in text:
-                neg_score += NEGATIVE_WEIGHTS[kw]
-                matched_neg.add(kw)
+                # 检查否定前缀（如"无风险"、"化解下跌"）
+                pattern = re.search(r'(?:不|未|无|防止|避免|防范|抵御|应对|控制|化解)\s*' + re.escape(kw), text)
+                if not pattern:
+                    neg_score += NEGATIVE_WEIGHTS[kw]
+                    matched_neg.add(kw)
 
         all_matched_pos.update(matched_pos)
         all_matched_neg.update(matched_neg)
@@ -106,6 +113,12 @@ def analyze_sentiment(news_list: List[Dict[str, Any]]) -> Dict[str, Any]:
             negative_news.append(news_item)
             if neg_score >= 2:
                 key_news.append({"title": title, "sentiment": "negative", "keywords": list(matched_neg)})
+        elif pos_score > 0 and pos_score == neg_score:
+            # 多空关键词权重相等，按正面数量更多的一方分类
+            if len(matched_pos) >= len(matched_neg):
+                pos_count += 1
+            else:
+                neg_count += 1
 
     # 判断整体情感
     total = pos_count + neg_count

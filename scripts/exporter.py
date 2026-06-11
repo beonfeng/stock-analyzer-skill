@@ -11,6 +11,52 @@ import datetime
 import html
 import re
 
+# 危险 HTML 标签/属性正则（防御深度：防止 API 返回数据中嵌入恶意脚本）
+_RE_DANGEROUS_TAGS = re.compile(
+    r'<\s*(script|iframe|object|embed|applet|meta|link|form|input|base|img|svg|math|video|audio|source|track)\b[^>]*>.*?<\s*/\s*\1\s*>',
+    re.IGNORECASE | re.DOTALL,
+)
+_RE_DANGEROUS_SELF_CLOSING = re.compile(
+    r'<\s*(script|iframe|object|embed|applet|meta|link|base|input|img|svg|math|video|audio|source|track)\b[^>]*/?\s*>',
+    re.IGNORECASE,
+)
+_RE_EVENT_HANDLERS = re.compile(
+    r'\s+on\w+\s*=\s*"[^"]*"',
+    re.IGNORECASE,
+)
+_RE_EVENT_HANDLERS_SINGLE = re.compile(
+    r"\s+on\w+\s*=\s*'[^']*'",
+    re.IGNORECASE,
+)
+_RE_EVENT_HANDLERS_UNQUOTED = re.compile(
+    r"\s+on\w+\s*=\s*\S+",
+    re.IGNORECASE,
+)
+_RE_JAVASCRIPT_URL = re.compile(
+    r'(href|src|action|formaction)\s*=\s*"javascript:',
+    re.IGNORECASE,
+)
+_RE_JAVASCRIPT_URL_SINGLE = re.compile(
+    r"(href|src|action|formaction)\s*=\s*'javascript:",
+    re.IGNORECASE,
+)
+
+
+def _sanitize_html(html_content: str) -> str:
+    """移除 HTML 中的危险标签和属性，防止 XSS。"""
+    # 移除完整标签（含内容）
+    s = _RE_DANGEROUS_TAGS.sub("", html_content)
+    # 移除自闭合/单标签形式
+    s = _RE_DANGEROUS_SELF_CLOSING.sub("", s)
+    # 移除事件处理器属性
+    s = _RE_EVENT_HANDLERS.sub("", s)
+    s = _RE_EVENT_HANDLERS_SINGLE.sub("", s)
+    s = _RE_EVENT_HANDLERS_UNQUOTED.sub("", s)
+    # 移除 javascript: URL
+    s = _RE_JAVASCRIPT_URL.sub(r'\1=""', s)
+    s = _RE_JAVASCRIPT_URL_SINGLE.sub(r"\1=''", s)
+    return s
+
 try:
     import markdown
     from markdown.extensions.tables import TableExtension
@@ -182,14 +228,19 @@ def md_to_html(md_content: str, title: str = "分析报告") -> str:
         # 简单降级：手动处理基本格式
         html_body = _simple_md_to_html(md_content)
     else:
+        extensions = [TableExtension(), FencedCodeExtension()]
+        try:
+            from markdown.extensions.nl2br import Nl2BrExtension
+            extensions.append(Nl2BrExtension())
+        except ImportError:
+            pass  # nl2br not available, skip
         html_body = markdown.markdown(
             md_content,
-            extensions=[
-                TableExtension(),
-                FencedCodeExtension(),
-                "nl2br",
-            ],
+            extensions=extensions,
         )
+
+    # 防御深度：净化 HTML，移除 API 数据可能携带的恶意标签
+    html_body = _sanitize_html(html_body)
 
     now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
     safe_title = html.escape(title)
@@ -330,7 +381,7 @@ def _simple_md_to_html(md_content: str) -> str:
 
 
 # 预编译正则表达式（行内格式处理）
-_RE_INLINE_CODE = re.compile(r"`(.+?)`")
+_RE_INLINE_CODE = re.compile(r"`([^`]+)`")
 _RE_BOLD = re.compile(r"\*\*(.+?)\*\*")
 
 

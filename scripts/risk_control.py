@@ -31,7 +31,7 @@ def detect_board_type(code: str) -> str:
     code = str(code).strip()
     if code.startswith("688"):
         return "star"
-    elif code.startswith("300"):
+    elif code.startswith("30"):  # 300xxx/301xxx/302xxx 均为创业板
         return "gem"
     elif code.startswith("8") or code.startswith("4"):
         return "bj"
@@ -62,6 +62,15 @@ def calc_dynamic_stop_loss(
             'description': str
         }
     """
+    # 防御：价格为 0 或负值无法计算止损
+    if current_price <= 0:
+        return {
+            "stop_loss": 0,
+            "stop_pct": 0.0,
+            "method": method,
+            "description": "价格数据异常，无法计算止损位",
+        }
+
     limit_ratio = LIMIT_RATIOS.get(board_type, 0.10)
     max_stop_pct = limit_ratio * 0.70  # 止损不超过涨跌停的 70%
 
@@ -181,7 +190,7 @@ def calc_support_resistance(
     # 3. 近期高低点
     high_20 = 0
     low_20 = 0
-    if len(df) >= 20:
+    if len(df) >= 20 and "最高" in df.columns and "最低" in df.columns:
         recent_20 = df.tail(20)
         high_20 = recent_20["最高"].max()
         low_20 = recent_20["最低"].min()
@@ -191,7 +200,7 @@ def calc_support_resistance(
         if low_20 < current_price:
             support.append({"price": round(low_20, 2), "source": "20日最低"})
 
-    if len(df) >= 60:
+    if len(df) >= 60 and "最高" in df.columns and "最低" in df.columns:
         recent_60 = df.tail(60)
         high_60 = recent_60["最高"].max()
         low_60 = recent_60["最低"].min()
@@ -259,6 +268,10 @@ def calc_position_size(
             'description': str
         }
     """
+    # 参数校验：无效 direction 默认 hold
+    if direction not in ("buy", "sell", "hold"):
+        direction = "hold"
+
     if direction == "sell" or score <= -5:
         return {
             "position_pct": 0,

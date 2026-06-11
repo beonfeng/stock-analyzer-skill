@@ -19,23 +19,17 @@ import gzip
 import http.client
 import random
 import pandas as pd
-import numpy as np
+
 
 
 # ============================================================
 # 本地工具函数（避免循环导入）
 # ============================================================
 
-def _local_safe_num(val, default=0.0):
-    """安全数值转换（本地版）"""
-    if val is None or val == "-" or val == "":
-        return default
-    if isinstance(val, str) and val.strip() in ("N/A", "--", "nan", "NaN", "NA", "null"):
-        return default
-    try:
-        return float(val)
-    except (ValueError, TypeError):
-        return default
+try:
+    from .utils import safe_num as _local_safe_num
+except ImportError:
+    from scripts.utils import safe_num as _local_safe_num
 
 
 def _http_fetch(host, path, headers=None, timeout=10, encoding='utf-8'):
@@ -52,6 +46,7 @@ def _http_fetch(host, path, headers=None, timeout=10, encoding='utf-8'):
     ]
     headers["User-Agent"] = random.choice(ua_pool)
 
+    conn = None
     try:
         conn = http.client.HTTPSConnection(host, timeout=timeout)
         conn.request("GET", path, headers=headers)
@@ -71,10 +66,15 @@ def _http_fetch(host, path, headers=None, timeout=10, encoding='utf-8'):
         if text is None:
             text = data.decode('latin-1')
 
-        conn.close()
         return text
     except Exception:
         return None
+    finally:
+        if conn:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
 
 # ============================================================
@@ -212,7 +212,7 @@ def fetch_quote_sina(code):
         return None
 
     parts = match.group(1).split(",")
-    if len(parts) < 33:
+    if len(parts) < 10:
         return None
 
     name = parts[0]
@@ -297,6 +297,7 @@ def fetch_kline_tencent(code, days=500):
     if df.empty:
         return None
 
+    df = df.sort_values("日期").reset_index(drop=True)
     if len(df) > 1:
         prev = df["收盘"].shift(1)
         df["涨跌幅"] = ((df["收盘"] - prev) / prev * 100).fillna(0).round(2)
@@ -359,6 +360,7 @@ def fetch_kline_sina(code, days=500):
     if df.empty:
         return None
 
+    df = df.sort_values("日期").reset_index(drop=True)
     if len(df) > 1:
         prev = df["收盘"].shift(1)
         df["涨跌幅"] = ((df["收盘"] - prev) / prev * 100).fillna(0).round(2)

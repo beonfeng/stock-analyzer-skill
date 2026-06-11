@@ -120,28 +120,15 @@ def get_valuation_zone(percentile):
 
 def fetch_historical_valuation(code, years=5):
     """
-    获取历史估值数据。
+    获取历史估值数据（已弃用）。
 
-    通过东方财富 K 线 API 获取近 N 年的日线数据，并提取估值指标。
+    东方财富 K 线 API 不返回 PE/PB 历史序列（仅提供实时值）。
+    估值分位数功能暂时不可用，调用方应使用 _estimate_zone_from_value 经验判断。
+    待实现：可通过逐日计算 总市值=股价×总股本 来重建 PE 历史序列。
 
-    注意：东方财富 K 线 API 返回的 fields2 中包含 f116（总市值），
-    但不直接返回 PE/PB 历史序列。因此本函数采用以下策略：
-    1. 尝试从 K 线数据中提取可用的估值字段
-    2. 如果 API 限制导致无法获取完整历史，返回空字典并由调用方处理
-
-    Args:
-        code: 股票代码（如 '600519'）
-        years: 回溯年数（默认 5）
-
-    Returns:
-        dict: {'PE': list, 'PB': list, '股息率': list}
-            如果无法获取历史数据，返回空列表的字典
+    保留函数签名以兼容调用方，始终返回空结果。
     """
-    result = {'PE': [], 'PB': [], '股息率': []}
-
-    # API 不返回 PE/PB 历史序列，使用经验阈值判断
-    # 保留函数签名以兼容调用方，直接返回空结果
-    return result
+    return {'PE': [], 'PB': [], '股息率': []}
 
 
 def analyze_valuation_percentile(code, current_quote, years=5, kline_data=None):
@@ -245,7 +232,7 @@ def _estimate_zone_from_value(metric_name, value):
         else:
             return "高股息（经验判断）"
 
-    if abs(value) < 1e-6:
+    if abs(value) < 1e-6 or (isinstance(value, float) and np.isnan(value)):
         return "数据缺失"
 
     if metric_name == "PE":

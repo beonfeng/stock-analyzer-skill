@@ -85,11 +85,15 @@ def parse_counter_evidence(content: str) -> List[Dict[str, Any]]:
 
         # MACD 交叉
         if "MACD" in text and ("死叉" in text or "金叉" in text):
-            condition["type"] = "macd_cross"
-            if "死叉" in text:
-                condition["direction"] = "bearish"  # 当前看多，死叉出现=反证
+            negated = any(neg in text for neg in ["未出现", "未形成", "暂无", "尚未", "避免", "预警"])
+            if negated:
+                condition["type"] = "macd_cross_negated"  # 标记为非触发条件
             else:
-                condition["direction"] = "bullish"  # 当前看空，金叉出现=反证
+                condition["type"] = "macd_cross"
+                if "死叉" in text:
+                    condition["direction"] = "bearish"  # 当前看多，死叉出现=反证
+                else:
+                    condition["direction"] = "bullish"  # 当前看空，金叉出现=反证
 
         # 股价与均线关系
         elif "20 日均线" in text or "20日均线" in text:
@@ -168,6 +172,11 @@ def check_condition_now(condition: Dict[str, Any], indicators: Dict, fund_flow: 
         price = indicators.get("最新价", 0)
         ma_key = "MA20" if ctype == "price_ma20" else "MA60"
         ma_value = indicators.get(ma_key, 0)
+        if ma_value == 0:
+            result["triggered"] = False
+            result["current_value"] = f"价格={price:.2f}, {ma_key}=N/A"
+            result["detail"] = "均线数据不可用，无法判断"
+            return result
         result["current_value"] = f"价格={price:.2f}, {ma_key}={ma_value:.2f}"
 
         if condition["direction"] == "bearish":
@@ -181,15 +190,14 @@ def check_condition_now(condition: Dict[str, Any], indicators: Dict, fund_flow: 
 
     elif ctype == "profit_growth":
         # 从实时行情获取净利润同比（quote.f41 字段）
-        profit_growth = safe_num(quote.get("f41", 0)) if quote else 0
-        if profit_growth != 0:
+        raw_f41 = quote.get("f41") if quote else None
+        if raw_f41 is not None and str(raw_f41).strip() not in ("", "-", "N/A", "--"):
+            profit_growth = safe_num(raw_f41)
             result["current_value"] = f"净利润同比={profit_growth:.1f}%"
             if condition["direction"] == "bearish":
-                # 反证条件是"转负"，检查是否已转负
                 result["triggered"] = profit_growth < 0
                 result["detail"] = f"{'已转负' if profit_growth < 0 else '仍为正增长'}"
             else:
-                # 反证条件是"继续下滑"，检查是否继续下滑
                 prev_growth = condition["params"].get("prev_growth", 0)
                 result["triggered"] = profit_growth < prev_growth
                 result["detail"] = f"{'继续下滑' if profit_growth < prev_growth else '有所改善'}"
@@ -310,7 +318,8 @@ def monitor_reports(report_dir: str, codes: Optional[List[str]] = None, days: Op
 
     results = []
     total_triggered = 0
-    # 按股票代码去重，只取每只股票最新的一份报告
+    # 按报告日期排序（最新优先），再按代码去重
+    reports.sort(key=lambda r: r["date"], reverse=True)
     seen_codes = {}
     for r in reports:
         if r["code"] not in seen_codes:
