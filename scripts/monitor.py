@@ -221,11 +221,11 @@ def check_condition_now(condition: Dict[str, Any], indicators: Dict, fund_flow: 
             result["detail"] = f"5日累计净流入 {flow_5d/1e8:.2f} 亿"
 
     elif ctype == "sector_rank":
-        # 尝试从行情数据获取所属行业信息
-        # 由于板块排名需要实时查询，此处标记为需要手动确认
+        # 行业板块排名需要实时查询 clist 接口（未在监控流程中调用）
+        # 标记为"未检查"（非"未触发"），提醒用户手动确认
         result["triggered"] = False
-        result["current_value"] = "需板块数据"
-        result["detail"] = "建议查看行业板块排名是否仍在前30名"
+        result["current_value"] = "未检查"
+        result["detail"] = "需手动获取行业板块排名确认是否跌出前30（监控未调用板块API）"
 
     return result
 

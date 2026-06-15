@@ -1229,12 +1229,22 @@ def _section_company_analysis(ctx):
     else:
         insights.append("基本面与技术面信号分化，建议观望等待更明确的方向")
 
-    # 估值判断
+    # 估值判断（使用行业差异化阈值，与估价分位数分析保持一致）
     if pe > 0:
-        if pe < 15:
-            insights.append(f"估值偏低（PE {pe:.1f}），具有安全边际")
-        elif pe > 50:
-            insights.append(f"估值偏高（PE {pe:.1f}），需要业绩高增长支撑")
+        from .valuation_analysis import _match_industry
+        ind_name = (ctx.company_profile or {}).get('基本信息', {}).get('所属行业', '') if ctx.company_profile else ''
+        ind_thresholds = _match_industry(ind_name)
+        if ind_thresholds:
+            pe_lo, pe_hi, _, _ = ind_thresholds
+            if pe < pe_lo:
+                insights.append(f"估值偏低（PE {pe:.1f}，低于{ind_name}合理区间{pe_lo}-{pe_hi}），具有安全边际")
+            elif pe > pe_hi:
+                insights.append(f"估值偏高（PE {pe:.1f}，高于{ind_name}合理区间{pe_lo}-{pe_hi}），需注意估值风险")
+        else:
+            if pe < 15:
+                insights.append(f"估值偏低（PE {pe:.1f}），具有安全边际")
+            elif pe > 50:
+                insights.append(f"估值偏高（PE {pe:.1f}），需要业绩高增长支撑")
 
     for insight in insights:
         L.append(f"- {insight}")
@@ -1263,7 +1273,16 @@ def _section_summary(ctx):
     # 技术面一句话
     dif = ctx.indicators.get("DIF", 0)
     dea = ctx.indicators.get("DEA", 0)
-    macd_signal = "MACD金叉（看涨）" if dif > dea else "MACD死叉（看跌）"
+    dif_prev = ctx.indicators.get("DIF_prev")
+    dea_prev = ctx.indicators.get("DEA_prev")
+    if (dif_prev is not None and dea_prev is not None
+            and dif_prev <= dea_prev and dif > dea):
+        macd_signal = "MACD金叉（看涨）"
+    elif (dif_prev is not None and dea_prev is not None
+            and dif_prev >= dea_prev and dif < dea):
+        macd_signal = "MACD死叉（看跌）"
+    else:
+        macd_signal = "MACD多头区域" if dif > dea else "MACD空头区域"
     k_val = ctx.indicators.get("K", 50)
     kdj_signal = "KDJ超买" if k_val > 80 else "KDJ超卖" if k_val < 20 else "KDJ中性"
     ma5 = ctx.indicators.get("MA5", 0)
@@ -1277,6 +1296,7 @@ def _section_summary(ctx):
     if ctx.fund_flow:
         main_today = safe_num(ctx.fund_flow.get("今日", {}).get("f62", 0))
         main_5d = safe_num(ctx.fund_flow.get("5日", {}).get("f62", 0))
+        is_alt = bool(ctx.fund_flow.get("今日", {}).get("_source", ""))
         fund_desc = "主力资金"
         if main_today > 0:
             fund_desc += f"今日净流入{fmt_num(main_today)}"
@@ -1286,6 +1306,8 @@ def _section_summary(ctx):
             fund_desc += f"，5日净流入{fmt_num(main_5d)}"
         elif main_5d < 0:
             fund_desc += f"，5日净流出{fmt_num(abs(main_5d))}"
+        elif is_alt:
+            fund_desc += "，多日数据不可用（备选源限制）"
         L.append(f"**资金面**：{fund_desc}。")
 
     # 基本面一句话
@@ -1301,8 +1323,11 @@ def _section_summary(ctx):
     if ctx.financial_health:
         red_flags = ctx.financial_health.get("排雷红灯", [])
         warnings = ctx.financial_health.get("排雷预警", [])
+        has_incomplete = any("数据不全" in w for w in warnings)
         if red_flags:
             L.append(f"**财务排雷**：发现 {len(red_flags)} 项红灯信号，需重点关注。")
+        elif has_incomplete:
+            L.append("**财务排雷**：财务数据不全（备选源限制），部分检查已跳过。")
         elif warnings:
             L.append(f"**财务排雷**：发现 {len(warnings)} 项预警，整体可控。")
         else:
@@ -1389,11 +1414,24 @@ def _section_technical_analysis(ctx):
     L.append("  - 绿柱（负值）：空头占优，柱子放大表示空头增强")
     L.append("- **金叉**（DIF上穿DEA）→ 买入信号；**死叉**（DIF下穿DEA）→ 卖出信号\n")
     dif_val = ctx.indicators.get("DIF", 0)
+    dif_val = ctx.indicators.get("DIF", 0)
     dea_val = ctx.indicators.get("DEA", 0)
     macd_val = ctx.indicators.get("MACD", 0)
+    dif_prev = ctx.indicators.get("DIF_prev")
+    dea_prev = ctx.indicators.get("DEA_prev")
     dif_signal = "短期趋势强于长期" if dif_val > 0 else "短期趋势弱于长期"
     dea_signal = "中期趋势向上" if dea_val > 0 else "中期趋势向下"
-    macd_signal = "金叉（看涨）" if dif_val > dea_val else "死叉（看跌）"
+    # 使用真实穿越检测（与评分系统一致）
+    if (dif_prev is not None and dea_prev is not None
+            and dif_prev <= dea_prev and dif_val > dea_val):
+        macd_signal = "金叉（看涨，真实上穿）"
+    elif (dif_prev is not None and dea_prev is not None
+            and dif_prev >= dea_prev and dif_val < dea_val):
+        macd_signal = "死叉（看跌，真实下穿）"
+    elif dif_val > dea_val:
+        macd_signal = "多头区域（看涨）"
+    else:
+        macd_signal = "空头区域（看跌）"
     L.append(f"| 指标 | 数值 | 含义 | 信号 |")
     L.append(f"|------|------|------|------|")
     L.append(f"| DIF | {dif_val:.4f} | {dif_signal} | |")
@@ -1830,8 +1868,12 @@ def _section_industry_comparison(ctx):
     # 行业景气度
     sentiment = ctx.industry_comparison.get('行业景气度', {})
     L.append("\n### 10.2 行业景气度\n")
-    L.append(f"- **涨跌幅**：{sentiment.get('涨跌幅', 0):.2f}%")
-    L.append(f"- **换手率**：{sentiment.get('换手率', 0):.2f}%")
+    ind_chg = sentiment.get('涨跌幅', 0)
+    ind_turnover = sentiment.get('换手率', 0)
+    chg_str = f"{ind_chg:.2f}%" if ind_chg != 0 else "-"
+    turnover_str = f"{ind_turnover:.2f}%" if ind_turnover != 0 else "-"
+    L.append(f"- **涨跌幅**：{chg_str}")
+    L.append(f"- **换手率**：{turnover_str}")
     L.append(f"- **资金流向**：{sentiment.get('资金流入', '未知')}")
     L.append(f"- **景气度评估**：{sentiment.get('景气度', '中性')}")
 
@@ -1897,7 +1939,17 @@ def _section_counter_evidence(ctx):
     L.append("| 因子 | 当前状态 | 信息源 | 更新频率 |")
     L.append("|------|----------|--------|----------|")
     L.append(f"| 均线趋势 | {'多头' if ctx.price > ma20 else '空头'} | K线数据 | 每日 |")
-    L.append(f"| MACD信号 | {'金叉' if ctx.indicators.get('DIF',0) > ctx.indicators.get('DEA',0) else '死叉'} | K线数据 | 每日 |")
+    dif_t = ctx.indicators.get('DIF', 0)
+    dea_t = ctx.indicators.get('DEA', 0)
+    dif_p = ctx.indicators.get('DIF_prev')
+    dea_p = ctx.indicators.get('DEA_prev')
+    if (dif_p is not None and dea_p is not None and dif_p <= dea_p and dif_t > dea_t):
+        macd_track = "金叉"
+    elif (dif_p is not None and dea_p is not None and dif_p >= dea_p and dif_t < dea_t):
+        macd_track = "死叉"
+    else:
+        macd_track = "多头区域" if dif_t > dea_t else "空头区域"
+    L.append(f"| MACD信号 | {macd_track} | K线数据 | 每日 |")
     L.append(f"| 主力资金 | {'流入' if ctx.fund_flow and safe_num(ctx.fund_flow.get('今日',{}).get('f62',0)) > 0 else '流出'} | 资金流向 | 每日 |")
     if ctx.financial_health:
         pg = ctx.financial_health.get('净利润同比')
@@ -2279,8 +2331,7 @@ SIGNAL_WEIGHTS = {
     "volume_up": 1.0,              # 放量上涨 — 量价配合看多
     "volume_down_weak": -0.5,     # 缩量上涨 — 上涨动能不足
     "volume_down_panic": -1.5,    # 放量下跌 — 恐慌性抛售信号
-    "obv_inflow": 0.5,            # OBV 资金流入 — 资金面辅助确认
-    "obv_outflow": -0.5,          # OBV 资金流出 — 资金面辅助确认
+    # 注：OBV（能量潮）暂未实现，待集成到技术指标计算后再启用
 }
 
 
