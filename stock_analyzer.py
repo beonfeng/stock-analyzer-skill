@@ -25,6 +25,7 @@ from scripts.analyzer import (
     calculate_financial_health,
     calculate_rating,
     get_stock_name,
+    get_last_chart_data,
     safe_num,
 )
 from scripts.comparison import generate_comparison_table, compare_two_stocks, get_sector_stocks, analyze_sector
@@ -33,7 +34,7 @@ from scripts.exporter import md_to_html, md_to_pdf, HAS_MARKDOWN, HAS_WEASYPRINT
 from scripts.market_utils import is_us_stock
 
 
-def _export_report(report_path: str, fmt: str):
+def _export_report(report_path: str, fmt: str, chart_data: dict = None):
     try:
         from pathlib import Path
         p = Path(report_path)
@@ -44,13 +45,14 @@ def _export_report(report_path: str, fmt: str):
         title = p.stem  # 文件名作为标题
 
         if fmt == "html":
-            html_content = md_to_html(md_content, title)
+            html_content = md_to_html(md_content, title, chart_data=chart_data)
             html_path = p.with_suffix(".html")
             html_path.write_text(html_content, encoding="utf-8")
             print(f"  [HTML] {html_path.name}")
             return str(html_path)
         elif fmt == "pdf":
             pdf_path = p.with_suffix(".pdf")
+            # PDF 不支持交互式图表，不传递 chart_data
             actual_path = md_to_pdf(md_content, str(pdf_path), title)
             print(f"  [{'PDF' if actual_path.endswith('.pdf') else 'HTML降级'}] {Path(actual_path).name}")
             return actual_path
@@ -68,10 +70,15 @@ def cmd_analyze(args):
         try:
             # 支持股票名称输入，自动转换为代码
             code = resolve_stock_code(code)
-            report_path = analyze_stock(code, args.output)
-            # 导出 HTML/PDF
+            report_path = analyze_stock(code, args.output,
+                                          llm_enabled=getattr(args, "llm", False))
+            # 导出 HTML/PDF（HTML 格式自动附加交互式图表）
             if fmt != "md" and report_path:
-                _export_report(report_path, fmt)
+                try:
+                    chart_data = get_last_chart_data()
+                except Exception:
+                    chart_data = None
+                _export_report(report_path, fmt, chart_data=chart_data)
         except Exception as e:
             print(f"\n分析 {code} 时出错: {e}")
             traceback.print_exc()
@@ -534,6 +541,12 @@ def main():
         choices=["md", "html", "pdf"],
         default="md",
         help="输出格式：md=Markdown（默认），html=HTML，pdf=PDF"
+    )
+    analyze_parser.add_argument(
+        "--llm",
+        action="store_true",
+        default=False,
+        help="启用 AI 增强报告解读（需设置 ANTHROPIC_API_KEY 或 OPENAI_API_KEY 环境变量）"
     )
 
     # compare 子命令

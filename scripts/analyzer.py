@@ -20,6 +20,18 @@ from .utils import (_http_get, _http_get_safe, safe_num, safe_display,
     memo_get, memo_set, get_session_request_stats)
 from .alternative_sources import (fetch_quote_tencent, fetch_quote_sina,
     fetch_kline_tencent, fetch_kline_sina, fetch_fund_flow_tencent)
+try:
+    from .akshare_sources import (
+        fetch_kline_akshare, fetch_quote_akshare,
+        fetch_financial_report_akshare, fetch_company_profile_akshare,
+        fetch_news_akshare, HAS_AKSHARE)
+except ImportError:
+    HAS_AKSHARE = False
+    fetch_kline_akshare = None
+    fetch_quote_akshare = None
+    fetch_financial_report_akshare = None
+    fetch_company_profile_akshare = None
+    fetch_news_akshare = None
 from .technical_indicators import calculate_extended_indicators
 from .valuation_analysis import analyze_valuation_percentile
 from .industry_analysis import analyze_industry_comparison
@@ -37,6 +49,12 @@ from .comparison import compare_two_stocks, get_sector_stocks, analyze_sector
 # ============================================================
 
 _last_analysis_time = 0  # 上次分析完成时间戳，用于连续调用冷却保护
+_last_chart_data = {}   # 最近一次分析的图表数据（供 HTML 导出使用）
+
+
+def get_last_chart_data():
+    """返回最近一次分析的图表数据字典"""
+    return _last_chart_data
 
 
 # ============================================================
@@ -87,20 +105,30 @@ def fetch_kline(code, days=500):
     except Exception:
         pass
 
-    # 方法2（备选源）：腾讯财经 K 线
+    # 方法2（备选源）：AKShare K 线
+    if HAS_AKSHARE and fetch_kline_akshare:
+        try:
+            df = fetch_kline_akshare(code, days=days)
+            if df is not None and not df.empty:
+                print(f"  [提示] K线数据来自 AKShare（东方财富 push2his 不可用）")
+                return df
+        except Exception:
+            pass
+
+    # 方法3（备选源）：腾讯财经 K 线
     try:
         df = fetch_kline_tencent(code, days=days)
         if df is not None and not df.empty:
-            print(f"  [提示] K线数据来自腾讯财经（东方财富 push2his 不可用）")
+            print(f"  [提示] K线数据来自腾讯财经（东方财富/AKShare 不可用）")
             return df
     except Exception:
         pass
 
-    # 方法3（备选源）：新浪财经 K 线
+    # 方法4（备选源）：新浪财经 K 线
     try:
         df = fetch_kline_sina(code, days=days)
         if df is not None and not df.empty:
-            print(f"  [提示] K线数据来自新浪财经（东方财富/腾讯不可用）")
+            print(f"  [提示] K线数据来自新浪财经（所有主数据源不可用）")
             return df
     except Exception:
         pass
@@ -139,8 +167,11 @@ def fetch_realtime_quote(code):
             pe = direct("f92")  # f92 直接是 PE 值
         else:
             pe = direct("f162") / 100
-            if abs(pe) < 0.01 and pe != 0:
-                print(f"  [警告] PE 值异常小 ({pe})，f162 原始值={pe_raw}，可能不需要除以100")
+            # PE 正常范围通常 ≥ 1（除去亏损/微利），若除以100后异常小（<0.5），
+            # 说明 API 可能已修改格式不再返回基点值，此时回退到 f92 直接值
+            if abs(pe) < 0.5 and pe != 0:
+                pe = direct("f92")
+                print(f"  [警告] PE 值异常小 ({pe:.4f})，f162 可能非基点格式，已回退到 f92")
 
         # PB：f167 API 返回基点值，需除以 100
         pb_raw = data.get("f167", "-")
@@ -201,7 +232,17 @@ def fetch_realtime_quote(code):
             item_map[code]["market"] = market_code
             return item_map[code]
 
-    # 方法3（备选源）：腾讯财经 → 新浪财经
+    # 方法3（备选源）：AKShare 实时行情
+    if HAS_AKSHARE and fetch_quote_akshare:
+        try:
+            alt_quote = fetch_quote_akshare(code)
+            if alt_quote and alt_quote.get("f2", 0) > 0:
+                print(f"  [提示] 实时行情来自 AKShare（东方财富不可用）")
+                return alt_quote
+        except Exception:
+            pass
+
+    # 方法4（备选源）：腾讯财经 → 新浪财经
     # 东方财富 push2 不可用时自动切换，分散请求压力
     try:
         alt_quote = fetch_quote_tencent(code)
@@ -382,7 +423,24 @@ def fetch_stock_news(code):
     if rows:
         print(f"  获取到 {len(rows)} 条资讯（研报+公告）")
     else:
-        print(f"  [警告] 未获取到任何资讯数据")
+        print(f"  [警告] 未获取到任何东方财富资讯数据")
+
+    # 备选源：AKShare 个股新闻（当东方财富研报/公告均为空时）
+    if not rows and HAS_AKSHARE and fetch_news_akshare:
+        try:
+            news_df = fetch_news_akshare(code)
+            if news_df is not None and not news_df.empty:
+                for _, item in news_df.iterrows():
+                    rows.append({
+                        "新闻标题": f"[资讯] {item.get('新闻标题', '')}",
+                        "发布时间": str(item.get("发布时间", ""))[:10],
+                        "文章来源": item.get("文章来源", "AKShare"),
+                        "链接": item.get("链接", ""),
+                    })
+                print(f"  [提示] 资讯数据来自 AKShare（东方财富研报/公告不可用），共 {len(rows)} 条")
+        except Exception as e:
+            print(f"  [警告] AKShare 新闻获取失败: {e}")
+
     return pd.DataFrame(rows)
 
 
@@ -436,10 +494,20 @@ def fetch_financial_report(code):
         j = _http_get_safe("datacenter.eastmoney.com", "/api/data/get", params, retries=5)
         if j and isinstance(j, dict) and j.get("result"):
             return j["result"].get("data", [])
-        return []
     except Exception as e:
-        print(f"  [警告] 财务报表获取失败: {e}")
-        return []
+        print(f"  [警告] 东方财富财务报表获取失败: {e}")
+
+    # 备选源：AKShare 财务报表（腾讯/新浪不覆盖此数据类）
+    if HAS_AKSHARE and fetch_financial_report_akshare:
+        try:
+            fin_data = fetch_financial_report_akshare(code)
+            if fin_data:
+                print(f"  [提示] 财报数据来自 AKShare（东方财富 datacenter 不可用）")
+                return fin_data
+        except Exception as e:
+            print(f"  [警告] AKShare 财务报表获取失败: {e}")
+
+    return []
 
 
 def fetch_company_profile(code):
@@ -548,11 +616,41 @@ def fetch_company_profile(code):
                 latest_items = by_date[latest_date]
                 total_income = sum(it.get('MAIN_BUSINESS_INCOME', 0) for it in latest_items)
 
-                for it in sorted(latest_items, key=lambda x: x.get('MAIN_BUSINESS_INCOME', 0), reverse=True):
+                # 按产品分类（TYPE=2）为主维度，区域分类（TYPE=3）暂存
+                product_items = [it for it in latest_items if it.get('MAINOP_TYPE') == '2']
+                region_items = [it for it in latest_items if it.get('MAINOP_TYPE') == '3']
+
+                # 若 TYPE=2 为空则回退到 TYPE=1（某些股票只有业务类型分类）
+                if not product_items:
+                    product_items = [it for it in latest_items if it.get('MAINOP_TYPE') == '1']
+
+                # 产品维度去重：同 ITEM_NAME 仅保留 INCOME 最大的一条
+                seen_names = set()
+                deduped = []
+                for it in sorted(product_items, key=lambda x: x.get('MAIN_BUSINESS_INCOME', 0), reverse=True):
+                    name = it.get('ITEM_NAME', '')
+                    if name in seen_names or not name:
+                        continue
+                    seen_names.add(name)
+                    deduped.append(it)
+
+                # 过滤特殊项目：内部抵消/其他(补充) 单独标记
+                main_items = []
+                special_items = []
+                for it in deduped:
+                    name = it.get('ITEM_NAME', '')
+                    if '抵消' in name or '补充' in name:
+                        special_items.append(it)
+                    else:
+                        main_items.append(it)
+
+                for it in main_items:
                     name = it.get('ITEM_NAME', '')
                     income = it.get('MAIN_BUSINESS_INCOME', 0)
                     ratio = (income / total_income * 100) if total_income > 0 else 0
-                    gross = it.get('GROSS_RPOFIT_RATIO', 0)
+                    # GROSS_RPOFIT_RATIO 返回比率值（如 0.648 = 64.8%），需 ×100
+                    gross_raw = it.get('GROSS_RPOFIT_RATIO', 0)
+                    gross = (gross_raw or 0) * 100
                     result['主营业务'].append({
                         '名称': name,
                         '收入': income / 1e8,  # 转为亿元
@@ -560,6 +658,17 @@ def fetch_company_profile(code):
                         '毛利率': gross,
                         '报告期': latest_date,
                     })
+
+                # 区域维度（单独存储，供后续使用）
+                seen_regions = set()
+                region_deduped = []
+                for it in sorted(region_items, key=lambda x: x.get('MAIN_BUSINESS_INCOME', 0), reverse=True):
+                    name = it.get('ITEM_NAME', '')
+                    if name in seen_regions or not name:
+                        continue
+                    seen_regions.add(name)
+                    region_deduped.append(it)
+                result['区域收入'] = region_deduped
     except Exception as e:
         print(f"  [警告] 主营业务构成获取失败: {e}")
 
@@ -596,6 +705,24 @@ def fetch_company_profile(code):
                     })
     except Exception as e:
         print(f"  [警告] 十大流通股东获取失败: {e}")
+
+    # 备选源：AKShare 公司概况（当东方财富返回数据不完整时）
+    if (not result["基本信息"] or not result["基本信息"].get("公司名称")) \
+            and HAS_AKSHARE and fetch_company_profile_akshare:
+        try:
+            ak_profile = fetch_company_profile_akshare(code)
+            if ak_profile and ak_profile.get("基本信息"):
+                print(f"  [提示] 公司概况来自 AKShare（东方财富 emweb/datacenter 不可用）")
+                # 合并非空字段（AKShare 补充东方财富缺失的数据）
+                for key in ["基本信息", "公司简介", "经营范围"]:
+                    if not result[key] and ak_profile.get(key):
+                        result[key] = ak_profile[key]
+                if not result["主营业务"] and ak_profile.get("主营业务"):
+                    result["主营业务"] = ak_profile["主营业务"]
+                if not result["股东结构"] and ak_profile.get("股东结构"):
+                    result["股东结构"] = ak_profile["股东结构"]
+        except Exception as e:
+            print(f"  [警告] AKShare 公司概况获取失败: {e}")
 
     memo_set(memo_key, result)
     return result
@@ -994,6 +1121,17 @@ def calculate_rating(indicators, financial_health, fund_flow):
     # 限制在1-5分范围
     score = max(1, min(5, score + 1))  # 基础1分 + 最高4分加成
 
+    # 基本面保底：若财务健康且 PE 合理，评级不低于 2 星
+    if financial_health:
+        red_flags_bottom = financial_health.get("排雷红灯", [])
+        pe_bottom = safe_num(financial_health.get("PE", 0))
+        has_incomplete_bottom = any("数据不全" in w for w in financial_health.get("排雷预警", []))
+        # PE 在 0-25 且无红灯且数据完整 → 基本面健康 → 最低 2 星
+        if (0 < pe_bottom <= 25 and len(red_flags_bottom) == 0
+                and not has_incomplete_bottom and score < 2):
+            score = 2
+            details.append("基本面健康，评级保底 2 星")
+
     # 转换为星级
     stars = round(score)
     star_str = "★" * stars + "☆" * (5 - stars)
@@ -1027,7 +1165,7 @@ class ReportContext:
                  'extended_indicators', 'valuation_percentile', 'industry_comparison',
                  'weighted_score', 'stop_loss', 'target', 'support_resistance',
                  'position', 'risk_check', 'sentiment_result', 'company_profile',
-                 'price', 'now']
+                 'price', 'now', 'llm_interpretation']
     def __init__(self, **kwargs):
         for k in self.__slots__:
             if k not in kwargs:
@@ -1258,6 +1396,12 @@ def _section_summary(ctx):
     L = []
     L.append("---\n## 总结\n")
 
+    # AI 执行摘要（--llm 启用时）
+    if ctx.llm_interpretation:
+        exec_summary = ctx.llm_interpretation.get("executive_summary", "")
+        if exec_summary:
+            L.append(f"> **🤖 AI 综述**：{exec_summary}\n")
+
     # 投资评级
     if ctx.rating:
         L.append(f"**综合评级：{ctx.rating['星级符号']}（{ctx.rating['星级']}/5星）**\n")
@@ -1403,6 +1547,10 @@ def _section_technical_analysis(ctx):
         ma = ctx.indicators.get(f"MA{p}")
         if ma:
             L.append(f"| MA{p} | {ma:.2f} | {'价格在上（多头）' if ctx.price > ma else '价格在下（空头）'} |")
+    # 检查长期均线是否缺失（新股或数据源回退时）
+    missing_long = [p for p in [120, 250] if not ctx.indicators.get(f"MA{p}")]
+    if missing_long:
+        L.append(f"\n> ⚠️ 数据不足，MA{'/MA'.join(str(p) for p in missing_long)} 暂无（新上市或数据源回退）")
 
     # MACD
     L.append("\n### 2.2 MACD\n")
@@ -1413,7 +1561,6 @@ def _section_technical_analysis(ctx):
     L.append("  - 红柱（正值）：多头占优，柱子放大表示多头增强")
     L.append("  - 绿柱（负值）：空头占优，柱子放大表示空头增强")
     L.append("- **金叉**（DIF上穿DEA）→ 买入信号；**死叉**（DIF下穿DEA）→ 卖出信号\n")
-    dif_val = ctx.indicators.get("DIF", 0)
     dif_val = ctx.indicators.get("DIF", 0)
     dea_val = ctx.indicators.get("DEA", 0)
     macd_val = ctx.indicators.get("MACD", 0)
@@ -1612,18 +1759,18 @@ def _section_fundamentals(ctx):
         L.append("\n### 4.2 盈利与成长\n")
         L.append("| 指标 | 数值 | 说明 |")
         L.append("|------|------|------|")
-        for label, key, desc in [
-            ("加权净资产收益率", "f37", "公司用股东的钱赚钱的能力，越高越好"),
-            ("毛利率", "f49", "收入扣除直接成本后的利润率"),
-            ("营业收入", "f40", "公司总收入规模"),
-            ("净利润同比", "f41", "净利润同比增长率"),
-            ("资产负债率", "f34", "总负债/总资产，越高财务风险越大"),
+        for label, key, desc, field_type in [
+            ("加权净资产收益率", "f37", "公司用股东的钱赚钱的能力，越高越好", "pct"),
+            ("毛利率", "f49", "收入扣除直接成本后的利润率", "pct"),
+            ("营业收入", "f40", "公司总收入规模", "amount"),
+            ("净利润同比", "f41", "净利润同比增长率", "pct"),
+            ("资产负债率", "f34", "总负债/总资产，越高财务风险越大", "pct"),
         ]:
             raw = ctx.quote.get(key)
             if raw is not None and raw != 0 and str(raw).strip() not in ("", "-", "N/A", "--"):
                 v = safe_num(raw)
-                if abs(v) > 1000:
-                    v = fmt_num(v)
+                if field_type == "amount":
+                    v = fmt_num(v) if abs(v) > 0 else "-"
                 else:
                     v = f"{v:.2f}%"
             else:
@@ -2077,6 +2224,55 @@ def _section_risk_control(ctx):
     return L
 
 
+def _section_ai_interpretation(ctx):
+    """
+    AI 增强解读（仅当 --llm 启用时生成）。
+
+    包含：
+    - 执行摘要（自然语言综述）
+    - 指标矛盾检测
+    - 技术信号白话解读
+    - AI 建议跟踪因子
+    """
+    L = []
+    if not ctx.llm_interpretation:
+        return L
+
+    data = ctx.llm_interpretation
+    L.append("\n---\n## AI 增强解读\n")
+
+    # 执行摘要
+    exec_summary = data.get("executive_summary", "")
+    if exec_summary:
+        L.append(f"> {exec_summary}\n")
+
+    # 矛盾检测
+    contradictions = data.get("contradictions", [])
+    if contradictions:
+        L.append("### 指标矛盾警示\n")
+        for c in contradictions:
+            L.append(f"- ⚠️ {c}")
+        L.append("")
+
+    # 白话技术解读
+    explanation = data.get("signal_explanation", "")
+    if explanation:
+        L.append("### 技术信号白话解读\n")
+        L.append(f"{explanation}\n")
+
+    # 重点关注因子
+    factors = data.get("key_factors", [])
+    if factors:
+        L.append("### AI 建议跟踪因子\n")
+        for f in factors:
+            L.append(f"- {f}")
+        L.append("")
+
+    if any([exec_summary, contradictions, explanation, factors]):
+        L.append("> ℹ️ 以上解读由 AI 模型生成，仅供参考，不构成投资建议。\n")
+    return L
+
+
 def _section_disclaimer(ctx):
     """风险提示"""
     L = []
@@ -2092,7 +2288,8 @@ def generate_report(code, name, df, indicators, fund_flow, north_flow, quote, ne
                     valuation_percentile=None, industry_comparison=None,
                     weighted_score=None, stop_loss=None, target=None,
                     support_resistance=None, position=None, risk_check=None,
-                    sentiment_result=None, company_profile=None):
+                    sentiment_result=None, company_profile=None,
+                    llm_interpretation=None):
     """生成单个综合分析报告"""
     ctx = ReportContext(
         code=code, name=name, df=df, indicators=indicators,
@@ -2107,6 +2304,7 @@ def generate_report(code, name, df, indicators, fund_flow, north_flow, quote, ne
         position=position, risk_check=risk_check,
         sentiment_result=sentiment_result,
         company_profile=company_profile,
+        llm_interpretation=llm_interpretation,
         price=indicators.get("最新价", 0),
         now=datetime.datetime.now().strftime('%Y-%m-%d %H:%M')
     )
@@ -2118,6 +2316,7 @@ def generate_report(code, name, df, indicators, fund_flow, north_flow, quote, ne
         _section_fund_flow, _section_fundamentals, _section_financial_screen,
         _section_news, _section_industry_board, _section_extended_indicators,
         _section_valuation_percentile, _section_industry_comparison,
+        _section_ai_interpretation,  # AI 增强解读（--llm 启用时生成）
         _section_counter_evidence, _section_weighted_score,
         _section_trade_suggestion, _section_support_resistance,
         _section_sentiment, _section_risk_control, _section_disclaimer
@@ -2134,7 +2333,7 @@ def generate_report(code, name, df, indicators, fund_flow, north_flow, quote, ne
 # 注：_last_analysis_time 在模块顶部定义，此处不重复声明
 
 
-def analyze_stock(code, output_dir="."):
+def analyze_stock(code, output_dir=".", llm_enabled=False):
     # 分析间冷却保护：连续调用时强制间隔
     global _last_analysis_time
     elapsed_since_last = time.time() - _last_analysis_time
@@ -2279,6 +2478,44 @@ def analyze_stock(code, output_dir="."):
             industry_comparison = None
             tick_request_queue("跳过行业对比")
 
+    # ── LLM 增强解读 ──
+    llm_interpretation = None
+    if llm_enabled:
+        try:
+            from .llm_client import (detect_provider, build_analysis_prompt,
+                                     call_llm, parse_llm_response,
+                                     build_llm_context_from_report_ctx)
+            provider, api_key, base_url = detect_provider()
+            if provider.value != "unknown":
+                # 构建临时 ctx 用于提取数据
+                temp_ctx = ReportContext(
+                    code=code, name=name, df=df_hist, indicators=indicators,
+                    fund_flow=fund_flow, quote=quote,
+                    financial_health=financial_health, rating=rating,
+                    extended_indicators=extended_indicators,
+                    valuation_percentile=valuation_percentile,
+                    industry_comparison=industry_comparison,
+                    weighted_score=weighted_score, stop_loss=stop_loss,
+                    target=target, support_resistance=support_resistance,
+                    position=position, risk_check=risk_check,
+                    sentiment_result=sentiment_result,
+                    company_profile=company_profile,
+                    price=indicators.get("最新价", 0) if indicators else 0,
+                )
+                ctx_data = build_llm_context_from_report_ctx(temp_ctx)
+                prompt = build_analysis_prompt(ctx_data)
+                text = call_llm(provider, prompt, api_key=api_key,
+                              base_url=base_url, timeout=25)
+                if text:
+                    llm_interpretation = parse_llm_response(text)
+                    print("  [AI] LLM 增强解读已生成")
+                else:
+                    print("  [AI] LLM 调用未返回结果，降级为规则解读")
+            else:
+                print("  [AI] 未检测到可用 LLM provider（设置 ANTHROPIC_API_KEY 或 OPENAI_API_KEY），使用规则解读")
+        except Exception as e:
+            print(f"  [AI] LLM 调用异常: {e}，降级为规则解读")
+
     print("\n生成分析报告...")
     report = generate_report(
         code, name, df_hist, indicators, fund_flow, north_flow,
@@ -2286,12 +2523,23 @@ def analyze_stock(code, output_dir="."):
         extended_indicators, valuation_percentile, industry_comparison,
         weighted_score, stop_loss, target,
         support_resistance, position, risk_check, sentiment_result,
-        company_profile
+        company_profile, llm_interpretation
     )
     today = datetime.date.today().strftime("%Y%m%d")
     report_file = (out_path / f"{code}-{name}-分析报告-{today}.md").resolve()
     report_file.write_text(report, encoding="utf-8")
     print(f"  [OK] {report_file.name}")
+
+    # ── 提取图表数据（供 HTML 导出使用）──
+    global _last_chart_data
+    try:
+        from .chart_data import extract_all_chart_data
+        _last_chart_data = extract_all_chart_data(
+            df=df_hist, indicators=indicators, quote=quote,
+            fund_flow=fund_flow, valuation_percentile=valuation_percentile,
+        )
+    except Exception:
+        _last_chart_data = {}
 
     # 打印请求统计
     print_request_stats()

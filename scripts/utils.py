@@ -433,9 +433,16 @@ def _get_from_cache(cache_key):
 
 
 def _get_ttl_for_path(path):
+    # 精确匹配优先，避免子串误匹配（如 /api/qt/stock/get 误匹配 /api/qt/stock/kline/get）
+    best_match = None
+    best_len = 0
     for pattern, ttl in _CACHE_TTL_MAP.items():
         if pattern in path:
-            return ttl
+            if len(pattern) > best_len:
+                best_match = ttl
+                best_len = len(pattern)
+    if best_match is not None:
+        return best_match
     return _cache_ttl
 
 

@@ -33,7 +33,8 @@ def detect_board_type(code: str) -> str:
         return "star"
     elif code.startswith("30"):  # 300xxx/301xxx/302xxx 均为创业板
         return "gem"
-    elif code.startswith("8") or code.startswith("4"):
+    # 北交所：43xxxx/83xxxx/87xxxx/92xxxx；4xxxxx 可能为退市整理板，排除
+    elif code.startswith(("43", "83", "87", "92")):
         return "bj"
     else:
         return "main"

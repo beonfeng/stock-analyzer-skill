@@ -10,6 +10,7 @@
 import datetime
 import html
 import re
+from typing import Optional
 
 # 危险 HTML 标签/属性正则（防御深度：防止 API 返回数据中嵌入恶意脚本）
 _RE_DANGEROUS_TAGS = re.compile(
@@ -210,13 +211,14 @@ strong { font-weight: 600; }
 """
 
 
-def md_to_html(md_content: str, title: str = "分析报告") -> str:
+def md_to_html(md_content: str, title: str = "分析报告", chart_data: Optional[dict] = None) -> str:
     """
     将 Markdown 内容转换为完整的 HTML 页面。
 
     Args:
         md_content: Markdown 格式的报告内容
         title: HTML 页面标题
+        chart_data: 图表数据字典（可选，由 chart_data.extract_all_chart_data() 生成）
 
     Returns:
         完整的 HTML 字符串
@@ -242,6 +244,15 @@ def md_to_html(md_content: str, title: str = "分析报告") -> str:
     # 防御深度：净化 HTML，移除 API 数据可能携带的恶意标签
     html_body = _sanitize_html(html_body)
 
+    # 生成交互式图表 HTML（在 sanitize 之后注入，图表脚本是受控的安全内容）
+    charts_html = ""
+    if chart_data:
+        try:
+            from .charts_template import build_all_charts_html
+            charts_html = build_all_charts_html(chart_data)
+        except ImportError:
+            pass  # 图表模块不可用时静默跳过
+
     now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
     safe_title = html.escape(title)
     result = f"""<!DOCTYPE html>
@@ -257,6 +268,7 @@ def md_to_html(md_content: str, title: str = "分析报告") -> str:
         导出时间: {now} | Stock Analyzer
     </div>
     {html_body}
+    {charts_html}
 </body>
 </html>"""
     return result

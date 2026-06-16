@@ -42,3 +42,20 @@ from .comparison import (
     analyze_sector,
 )
 from .utils import _http_get, _http_get_safe
+
+# AKShare 备选数据源（可选依赖，未安装时自动降级）
+try:
+    from .akshare_sources import (
+        HAS_AKSHARE, check_akshare_health,
+        fetch_kline_akshare, fetch_quote_akshare,
+        fetch_financial_report_akshare,
+    )
+except ImportError:
+    HAS_AKSHARE = False
+    check_akshare_health = lambda: {"AKShare(未安装)": False}
+    fetch_kline_akshare = None
+    fetch_quote_akshare = None
+    fetch_financial_report_akshare = None
+
+# 统一数据源管理器
+from .datasource_manager import DataSourceManager, get_datasource_manager
