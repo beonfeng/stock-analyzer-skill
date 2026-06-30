@@ -5,7 +5,26 @@
 格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
-## [Unreleased]
+## [v1.3.0] — 2026-06-30
+
+### 新增
+- **逐笔成交分析**：当日全部逐笔成交大单异动检测，大单占比、主力聚集识别、异常大单预警（`details/get` API）
+- **板块资金全景**：全市场 100+ 行业板块资金流向排名，单次 `clist` 批量查询替代逐股查询
+- **历史财务趋势**：近 5 年营收/利润/现金流 CAGR 与趋势分析（利润表 RPT_DMSK_FN_INCOME + 现金流量表 RPT_DMSK_FN_CASHFLOW）
+- **财报期间标注**：基本面章节自动标注"基于 XXXX-XX-XX 财报"标签
+
+### 修复
+- **资金流向假数据**：`push2` 行情 API 的 f62 对所有股票返回 1，且 f66-f87 全部为 None。切换到 `push2his` 的 `fflow/daykline/get` 专项 API，获取真实逐日分层数据
+- **主营业务构成百分比不闭合**：分母包含了 TYPE=1（重复项）和 TYPE=3（区域分类），导致百分比仅 33%。修正为仅对展示项目求和
+- **每股收益始终显示 "-"**：`push2` 行情 API 的 f115 对所有股票返回 "-"。改为从 PE 反推（EPS = Price / PE）
+- **北向资金 API 失效**：kline 端点 `ut=b2884a39...` 已失效。切换到 `fflow/kline/get` 端点，静默降级处理
+
+### 改进
+- **章节重新编号**：新增 3 个章节后全文 19 章顺序重排
+- **API 请求优化**：移除 `fetch_realtime_quote` 中的资金流向字段合并（不同 ut 导致字段语义冲突）
+- **数据源原则**：确立"实时快照用 push2，历史专项用 push2his，财务报表用 datacenter"的 API 选择规则
+
+## [Unreleased] — 之前
 
 ### 修复
 
