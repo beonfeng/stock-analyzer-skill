@@ -137,15 +137,14 @@ def fetch_kline(code, days=500):
 
 
 def fetch_realtime_quote(code):
-    """获取实时行情 + 财务指标 + 资金流向（合并请求，节省 1 次 API 调用）"""
+    """获取实时行情 + 财务指标"""
     market_code, market_id, _ = get_market_info(code)
 
     # 方法1（优先）：直接查询单只股票 — O(1) 请求，适用于所有市场
-    # 合并行情 + 资金流向字段，避免两次 push2 请求
     params2 = {
         "secid": get_secid(code, market_id),
         "ut": "fa5fd1943c7b386f172d6893dbfba10b",
-        "fields": "f43,f44,f45,f46,f47,f48,f50,f51,f52,f55,f57,f58,f60,f62,f71,f92,f105,f115,f116,f117,f162,f167,f168,f169,f170,f171,f173,f177,f183,f184,f185,f186,f187,f188,f189,f190,f191,f192,f193,f66,f69,f72,f75,f78,f81,f84,f87,f267,f164,f174",
+        "fields": "f43,f44,f45,f46,f47,f48,f50,f51,f52,f55,f57,f58,f60,f71,f92,f105,f115,f116,f117,f162,f167,f168,f169,f170,f171,f173,f177,f183,f184,f185,f186,f187,f188,f189,f190,f191,f192,f193",
         "invt": "2",
     }
     j2 = _http_get_safe("push2.eastmoney.com", "/api/qt/stock/get", params2)
@@ -182,20 +181,13 @@ def fetch_realtime_quote(code):
         else:
             pb = 0
 
-        # 构建资金流向数据（与行情合并，避免额外 API 请求）
-        fund_flow = {
-            "今日": {
-                "f62": direct("f62"),
-                "f184": direct("f184"),
-                "f66": direct("f66"), "f69": direct("f69"),
-                "f72": direct("f72"), "f75": direct("f75"),
-                "f78": direct("f78"), "f81": direct("f81"),
-                "f84": direct("f84"), "f87": direct("f87"),
-            },
-            "3日": {"f62": direct("f267")},
-            "5日": {"f62": direct("f164")},
-            "10日": {"f62": direct("f174")},
-        }
+        # 每股收益：f115 常为 "-"，从 PE 反推更可靠
+        eps_raw = data.get("f115", "-")
+        if eps_raw == "-" or eps_raw is None:
+            price_val = convert_field("f43")
+            eps = (price_val / pe) if (price_val and pe and pe > 0) else 0
+        else:
+            eps = direct("f115")
 
         return {
             "f14": data.get("f58", ""),  # 名称
@@ -211,8 +203,7 @@ def fetch_realtime_quote(code):
             "f40": direct("f183"),  # 营收（元）
             "f41": direct("f185"),  # 净利润同比（已经是百分比）
             "f34": direct("f188"),  # 资产负债率（已经是百分比）
-            "f115": direct("f115"),  # 每股收益
-            "_fund_flow": fund_flow,  # 合并的资金流向数据
+            "f115": eps,  # 每股收益
             "market": market_code,  # 市场类型
         }
     # 方法2（备选）：从列表中查找 — O(n) 遍历，仅 A 股可用
@@ -263,43 +254,95 @@ def fetch_realtime_quote(code):
     return {"market": market_code}
 
 
-def fetch_fund_flow(code, quote=None):
-    """获取个股资金流向（优先从行情 quote 提取 → push2 → 腾讯外盘/内盘 多源回退）"""
-    # 方法0（优化）：从已合并的行情 quote 中提取资金流向数据，省 1 次 API 请求
-    if quote and quote.get("_fund_flow"):
-        flow = quote["_fund_flow"]
-        # 验证数据有效性（f62 非零或订单分级数据存在）
-        today = flow.get("今日", {})
-        if today.get("f62", 0) != 0 or today.get("f66", 0) != 0:
-            return flow
+def fetch_fund_flow(code):
+    """获取个股资金流向（fflow日K → push2 → 腾讯外盘/内盘 多源回退）
 
-    _, market_id, _ = get_market_info(code)
-
-    # 方法1：东方财富 push2（含超大单/大单/中单/小单拆分）
-    params = {
-        "secid": get_secid(code, market_id),
-        "ut": "7eea3edcaed734bea9cbfc24409ed989",
-        "fields": "f62,f184,f66,f69,f72,f75,f78,f81,f84,f87,f124,f267,f164,f174",
+    方法1: push2his fflow/daykline — 完整超大单/大单/中单/小单分层数据
+    方法2: push2 stock/get — 备选，仅主力汇总无分层
+    方法3: 腾讯外盘/内盘 — 最终兜底估算
+    返回格式: {
+        "今日": {f62, f184, f66, f69, f72, f75, f78, f81, f84, f87},
+        "3日": {f62}, "5日": {f62}, "10日": {f62}
     }
-    j = _http_get_safe("push2.eastmoney.com", "/api/qt/stock/get", params)
-    if j and j.get("data"):
-        data = j["data"]
-        today_data = {
-            "f62": data.get("f62", 0),
-            "f184": data.get("f184", 0),
-            "f66": data.get("f66", 0), "f69": data.get("f69", 0),
-            "f72": data.get("f72", 0), "f75": data.get("f75", 0),
-            "f78": data.get("f78", 0), "f81": data.get("f81", 0),
-            "f84": data.get("f84", 0), "f87": data.get("f87", 0),
-        }
-        return {
-            "今日": today_data,
-            "3日": {"f62": data.get("f267", 0)},
-            "5日": {"f62": data.get("f164", 0)},
-            "10日": {"f62": data.get("f174", 0)},
-        }
+    """
+    _, market_id, _ = get_market_info(code)
+    secid = get_secid(code, market_id)
 
-    # 方法2（备选源）：腾讯外盘/内盘估算
+    # ── 方法1：fflow/daykline（完整分层数据，10日量级）──
+    try:
+        params = {
+            "secid": secid,
+            "ut": "fa5fd1943c7b386f172d6893dbfba10b",
+            "fields1": "f1,f2,f3,f7",
+            "fields2": "f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61,f62,f63",
+            "klt": "101",
+            "fqt": "1",
+            "end": "20500101",
+            "lmt": "10",
+        }
+        j = _http_get_safe("push2his.eastmoney.com", "/api/qt/stock/fflow/daykline/get", params)
+        if j and j.get("data") and j["data"].get("klines"):
+            klines = j["data"]["klines"]
+            if klines:
+                # 解析最新一天为「今日」详细数据
+                # fflow 字段顺序：日期, 主力, 超大单, 大单, 中单, 小单,
+                #                   主力占比, 超大占比, 大单占比, 中单占比, 小单占比, 收盘价, 涨跌幅
+                latest = klines[-1].split(",")
+                today_data = {
+                    "f62": float(latest[1]),   # 主力净流入
+                    "f184": float(latest[6]),  # 主力净流入占比
+                    "f66": float(latest[2]),   # 超大单净流入
+                    "f69": float(latest[7]),   # 超大单占比
+                    "f72": float(latest[3]),   # 大单净流入
+                    "f75": float(latest[8]),   # 大单占比
+                    "f78": float(latest[4]),   # 中单净流入
+                    "f81": float(latest[9]),   # 中单占比
+                    "f84": float(latest[5]),   # 小单净流入
+                    "f87": float(latest[10]),  # 小单占比
+                }
+
+                # 从日K计算 3日/5日/10日 累计主力净流入
+                def _sum_period(days):
+                    n = min(days, len(klines))
+                    return sum(float(l.split(",")[1]) for l in klines[-n:])
+
+                return {
+                    "今日": today_data,
+                    "3日": {"f62": _sum_period(3)},
+                    "5日": {"f62": _sum_period(5)},
+                    "10日": {"f62": _sum_period(10)},
+                }
+    except Exception:
+        pass
+
+    # ── 方法2：push2 stock/get（备选：仅主力汇总，无订单分层）──
+    try:
+        params = {
+            "secid": secid,
+            "ut": "7eea3edcaed734bea9cbfc24409ed989",
+            "fields": "f62,f184,f66,f69,f72,f75,f78,f81,f84,f87,f267,f164,f174",
+        }
+        j = _http_get_safe("push2.eastmoney.com", "/api/qt/stock/get", params)
+        if j and j.get("data"):
+            data = j["data"]
+            today_data = {
+                "f62": data.get("f62", 0),
+                "f184": data.get("f184", 0),
+                "f66": data.get("f66", 0), "f69": data.get("f69", 0),
+                "f72": data.get("f72", 0), "f75": data.get("f75", 0),
+                "f78": data.get("f78", 0), "f81": data.get("f81", 0),
+                "f84": data.get("f84", 0), "f87": data.get("f87", 0),
+            }
+            return {
+                "今日": today_data,
+                "3日": {"f62": data.get("f267", 0)},
+                "5日": {"f62": data.get("f164", 0)},
+                "10日": {"f62": data.get("f174", 0)},
+            }
+    except Exception:
+        pass
+
+    # ── 方法3：腾讯外盘/内盘估算（最终兜底）──
     try:
         tencent_flow = fetch_fund_flow_tencent(code)
         if tencent_flow:
@@ -312,33 +355,35 @@ def fetch_fund_flow(code, quote=None):
 
 
 def fetch_north_flow():
-    """获取北向资金数据（Memoization 跨分析缓存：市场级数据复用）"""
+    """获取北向资金数据（Memoization 跨分析缓存：市场级数据复用）
+
+    使用 fflow/kline/get 端点获取沪股通/深股通指数走势，
+    作为市场级北向资金情绪的参考指标。
+    """
     cached = memo_get("north_flow")
     if cached is not None:
         return cached
 
     result = {}
-    # 北向资金使用专用的净买入数据接口
-    # 沪股通/深股通净买入金额通过资金流向接口获取
     for symbol, secid in [("沪股通", "1.000016"), ("深股通", "0.399005")]:
         params = {
-            "fields1": "f1,f2,f3,f4",
+            "fields1": "f1,f2,f3,f7",
             "fields2": "f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61,f62,f63",
             "klt": "101", "lmt": "10",
-            "ut": "b2884a393a59ad64002292a3e90d46a5",
+            "ut": "fa5fd1943c7b386f172d6893dbfba10b",
             "secid": secid,
         }
         try:
-            j = _http_get("push2his.eastmoney.com", "/api/qt/stock/kline/get", params)
-            klines = j.get("data", {}).get("klines", [])
+            j = _http_get_safe("push2his.eastmoney.com", "/api/qt/stock/fflow/kline/get", params)
+            klines = j.get("data", {}).get("klines", []) if j else []
             rows = []
             for line in klines:
                 parts = line.split(",")
-                if len(parts) >= 9:  # 需要访问 parts[8]（涨跌幅），至少 9 个字段
+                if len(parts) >= 9:
                     rows.append({"日期": parts[0], "收盘": parts[2], "涨跌幅": parts[8]})
             result[symbol] = pd.DataFrame(rows)
-        except Exception as e:
-            print(f"  [警告] 北向资金({symbol})获取失败: {e}")
+        except Exception:
+            pass  # 北向数据非核心功能，静默降级
     memo_set("north_flow", result)
     return result
 
@@ -614,7 +659,6 @@ def fetch_company_profile(code):
                     raise ValueError("无有效日期")
                 latest_date = max(valid_dates)
                 latest_items = by_date[latest_date]
-                total_income = sum(it.get('MAIN_BUSINESS_INCOME', 0) for it in latest_items)
 
                 # 按产品分类（TYPE=2）为主维度，区域分类（TYPE=3）暂存
                 product_items = [it for it in latest_items if it.get('MAINOP_TYPE') == '2']
@@ -643,6 +687,12 @@ def fetch_company_profile(code):
                         special_items.append(it)
                     else:
                         main_items.append(it)
+
+                # 以最终展示项目的收入总和为分母，确保百分比闭环
+                total_income = sum(it.get('MAIN_BUSINESS_INCOME', 0) for it in main_items)
+
+                # 保存财报报告期，供后续基本面章节标注数据时效
+                result['财报报告期'] = latest_date
 
                 for it in main_items:
                     name = it.get('ITEM_NAME', '')
@@ -725,6 +775,189 @@ def fetch_company_profile(code):
             print(f"  [警告] AKShare 公司概况获取失败: {e}")
 
     memo_set(memo_key, result)
+    return result
+
+
+def fetch_tick_details(code):
+    """获取逐笔成交明细（最近 200 条），用于大单异动检测。
+
+    返回:
+        dict: {
+            'trades': [{'时间': str, '价格': float, '手数': int, '笔数': int}, ...],
+            'total_vol': int,       # 总成交量(手)
+            'large_trades': int,    # 大单笔数(>=50手)
+            'large_vol': int,       # 大单成交量(手)
+            'avg_vol': float,       # 平均每笔手数
+            'max_vol': int,         # 最大单笔手数
+        }
+    """
+    _, market_id, _ = get_market_info(code)
+    secid = get_secid(code, market_id)
+
+    try:
+        params = {
+            "secid": secid,
+            "fields1": "f1,f2,f3,f4",
+            "fields2": "f51,f52,f53,f54,f55",
+            "pos": "-0",
+            "lmt": "200",
+        }
+        j = _http_get_safe("push2.eastmoney.com", "/api/qt/stock/details/get", params)
+        details = j.get("data", {}).get("details", []) if j else []
+        if not details:
+            return None
+
+        trades = []
+        total_vol = 0
+        large_trades = 0
+        large_vol = 0
+        max_vol = 0
+
+        for line in details:
+            parts = line.split(",")
+            if len(parts) < 4:
+                continue
+            vol = int(parts[2])  # 手
+            price = float(parts[1])
+            orders = int(parts[3]) if len(parts) > 3 else 0  # 成交笔数/单数
+
+            trades.append({
+                "时间": parts[0],
+                "价格": price,
+                "手数": vol,
+                "笔数": orders,
+            })
+            total_vol += vol
+            max_vol = max(max_vol, vol)
+            if vol >= 50:
+                large_trades += 1
+                large_vol += vol
+
+        avg_vol = total_vol / len(trades) if trades else 0
+
+        # 分析大单时间聚集度（连续5分钟内的大单占比）
+        large_clusters = 0
+        window = []
+        for t in sorted(trades, key=lambda x: x["时间"]):
+            if t["手数"] >= 50:
+                window.append(t)
+                # 简单聚集检测：相邻大单间隔 < 5 秒
+                if len(window) >= 3:
+                    # 检查最后3个大单的时间跨度
+                    times = [w["时间"] for w in window[-3:]]
+                    large_clusters += 1
+            else:
+                window = []
+
+        return {
+            "trades": trades,
+            "total_vol": total_vol,
+            "large_trades": large_trades,
+            "large_vol": large_vol,
+            "avg_vol": round(avg_vol, 1),
+            "max_vol": max_vol,
+            "large_ratio": round(large_vol / total_vol * 100, 1) if total_vol > 0 else 0,
+            "large_clusters": large_clusters,
+        }
+    except Exception:
+        return None
+
+
+def fetch_sector_fund_flow_panorama():
+    """获取全市场板块资金流向全景（单次 clist 批量查询）。
+
+    返回:
+        list: [{'名称': str, '代码': str, '涨跌幅': float, '主力净流入': float, ...}, ...]
+        按今日主力净流入降序排列
+    """
+    try:
+        params = {
+            "pn": "1", "pz": "120", "po": "0", "np": "1",
+            "ut": "bd1d9ddb04089700cf9c27f6f7426281",
+            "fltt": "2", "invt": "2",
+            "fid": "f62",
+            "fs": "m:90+t:2",
+            "fields": "f2,f3,f4,f12,f14,f62,f184,f66,f69,f72,f78,f84,f104,f128",
+        }
+        j = _http_get_safe("push2.eastmoney.com", "/api/qt/clist/get", params)
+        items = j.get("data", {}).get("diff", []) if j else []
+        if not items:
+            return []
+
+        result = []
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            result.append({
+                "名称": item.get("f14", ""),
+                "代码": str(item.get("f12", "")),
+                "涨跌幅": safe_num(item.get("f3", 0)),
+                "主力净流入": safe_num(item.get("f62", 0)),
+                "主力占比": safe_num(item.get("f184", 0)),
+                "超大单净流入": safe_num(item.get("f66", 0)),
+                "大单净流入": safe_num(item.get("f72", 0)),
+                "中单净流入": safe_num(item.get("f78", 0)),
+                "小单净流入": safe_num(item.get("f84", 0)),
+                "换手率": safe_num(item.get("f4", 0)),
+            })
+
+        return result
+    except Exception:
+        return []
+
+
+def fetch_historical_financials(code):
+    """获取近 5 年历史财务数据（利润表 + 现金流量表）。
+
+    返回:
+        dict: {
+            'income': [{'报告期': str, '营业总收入': float, '归母净利润': float,
+                        '营业成本': float, '营业利润': float}, ...],
+            'cashflow': [{'报告期': str, '经营现金流': float}, ...],
+        }
+    """
+    result = {"income": [], "cashflow": []}
+
+    try:
+        # 利润表
+        params1 = {
+            "type": "RPT_DMSK_FN_INCOME",
+            "sty": "ALL",
+            "filter": f'(SECUCODE="{code}.SZ")(REPORT_DATE>=\'2021-01-01\')',
+            "p": "1", "ps": "20",
+            "sr": "1", "st": "REPORT_DATE",
+            "source": "HSF10", "client": "PC",
+        }
+        j1 = _http_get_safe("datacenter.eastmoney.com", "/api/data/get", params1)
+        items1 = j1.get("result", {}).get("data", []) if j1 else []
+        for item in items1:
+            result["income"].append({
+                "报告期": (item.get("REPORT_DATE") or "")[:10],
+                "营业总收入": safe_num(item.get("TOTAL_OPERATE_INCOME", 0)),
+                "营业成本": safe_num(item.get("TOTAL_OPERATE_COST", 0)),
+                "营业利润": safe_num(item.get("OPERATE_PROFIT", 0)),
+                "归母净利润": safe_num(item.get("PARENT_NETPROFIT", 0)),
+            })
+
+        # 现金流量表
+        params2 = {
+            "type": "RPT_DMSK_FN_CASHFLOW",
+            "sty": "ALL",
+            "filter": f'(SECUCODE="{code}.SZ")(REPORT_DATE>=\'2021-01-01\')',
+            "p": "1", "ps": "20",
+            "sr": "1", "st": "REPORT_DATE",
+            "source": "HSF10", "client": "PC",
+        }
+        j2 = _http_get_safe("datacenter.eastmoney.com", "/api/data/get", params2)
+        items2 = j2.get("result", {}).get("data", []) if j2 else []
+        for item in items2:
+            result["cashflow"].append({
+                "报告期": (item.get("REPORT_DATE") or "")[:10],
+                "经营现金流": safe_num(item.get("NETCASH_OPERATE", 0)),
+            })
+    except Exception:
+        pass
+
     return result
 
 
@@ -1165,7 +1398,8 @@ class ReportContext:
                  'extended_indicators', 'valuation_percentile', 'industry_comparison',
                  'weighted_score', 'stop_loss', 'target', 'support_resistance',
                  'position', 'risk_check', 'sentiment_result', 'company_profile',
-                 'price', 'now', 'llm_interpretation']
+                 'price', 'now', 'llm_interpretation',
+                 'tick_analysis', 'sector_panorama', 'financial_trends']
     def __init__(self, **kwargs):
         for k in self.__slots__:
             if k not in kwargs:
@@ -1736,9 +1970,17 @@ def _section_fund_flow(ctx):
 def _section_fundamentals(ctx):
     """基本面分析"""
     L = []
-    L.append("---\n## 四、基本面分析\n")
+    L.append("---\n## 五、基本面分析\n")
 
     if ctx.quote:
+        # 标注财报报告期
+        report_period = ""
+        if ctx.company_profile:
+            rp = ctx.company_profile.get('财报报告期', '')
+            if rp:
+                report_period = f"（基于 {rp} 财报）"
+        L.append(f"> 以下财务数据来自最新财报{report_period}，部分指标为单季度数据\n")
+
         L.append("### 4.1 估值指标\n")
         L.append("| 指标 | 数值 | 说明 |")
         L.append("|------|------|------|")
@@ -1788,7 +2030,7 @@ def _section_financial_screen(ctx):
     if not ctx.financial_health:
         return L
 
-    L.append("\n---\n## 五、财务排雷\n")
+    L.append("\n---\n## 六、财务排雷\n")
     L.append("财务排雷用于检查利润质量、现金流匹配度和潜在财务风险。\n")
 
     # 核心指标表
@@ -1860,7 +2102,7 @@ def _section_financial_screen(ctx):
 def _section_news(ctx):
     """新闻动态"""
     L = []
-    L.append("\n---\n## 六、新闻动态\n")
+    L.append("\n---\n## 八、新闻动态\n")
     if not ctx.news_df.empty:
         L.append("| 时间 | 标题 | 来源 |")
         L.append("|------|------|------|")
@@ -1879,7 +2121,7 @@ def _section_news(ctx):
 def _section_industry_board(ctx):
     """行业板块"""
     L = []
-    L.append("\n---\n## 七、行业板块排名\n")
+    L.append("\n---\n## 九、行业板块排名\n")
     if not ctx.industry_df.empty:
         L.append("当日行业板块涨跌排名（前20）：\n")
         L.append("| 排名 | 板块 | 涨跌幅 | 换手率 |")
@@ -1900,7 +2142,7 @@ def _section_extended_indicators(ctx):
     if not ctx.extended_indicators:
         return L
 
-    L.append("\n---\n## 八、扩展技术指标\n")
+    L.append("\n---\n## 十一、扩展技术指标\n")
 
     # RSI 背离
     rsi_div = ctx.extended_indicators.get('RSI背离', {})
@@ -1962,7 +2204,7 @@ def _section_valuation_percentile(ctx):
     if not ctx.valuation_percentile:
         return L
 
-    L.append("\n---\n## 九、估值分位数分析\n")
+    L.append("\n---\n## 十二、估值分位数分析\n")
     L.append("估值分位数反映当前估值在近 5 年历史中的位置：")
     L.append("- 0%~20%：低估区间，可能存在投资机会")
     L.append("- 20%~40%：合理偏低")
@@ -1993,7 +2235,7 @@ def _section_industry_comparison(ctx):
     if not ctx.industry_comparison:
         return L
 
-    L.append("\n---\n## 十、行业对比分析\n")
+    L.append("\n---\n## 十三、行业对比分析\n")
 
     industry_code = ctx.industry_comparison.get('行业', '')
     L.append(f"所属行业板块：{industry_code}\n")
@@ -2042,7 +2284,7 @@ def _section_industry_comparison(ctx):
 def _section_counter_evidence(ctx):
     """反证清单与跟踪因子"""
     L = []
-    L.append("\n---\n## 十一、反证清单与跟踪因子\n")
+    L.append("\n---\n## 十四、反证清单与跟踪因子\n")
     L.append("以下事实出现时，应重新评估当前结论：\n")
 
     # 根据当前技术状态生成反证清单
@@ -2115,7 +2357,7 @@ def _section_weighted_score(ctx):
     if not ctx.weighted_score:
         return L
 
-    L.append("\n---\n## 十二、加权信号评分\n")
+    L.append("\n---\n## 十五、加权信号评分\n")
     L.append(f"**综合评分：{ctx.weighted_score['score']:.2f}**（-10 到 +10）\n")
     L.append(f"**操作方向：{ctx.weighted_score['direction']}**")
     L.append(f"**置信度：{ctx.weighted_score['confidence']}**\n")
@@ -2138,7 +2380,7 @@ def _section_trade_suggestion(ctx):
     if not (ctx.stop_loss and ctx.target and ctx.position and ctx.weighted_score):
         return L
 
-    L.append("\n---\n## 十三、操作建议\n")
+    L.append("\n---\n## 十六、操作建议\n")
     L.append(f"**方向：{ctx.weighted_score['direction']}**")
     L.append(f"**仓位：{ctx.position['position_pct']}%**（{ctx.position['description']}）\n")
 
@@ -2156,7 +2398,7 @@ def _section_support_resistance(ctx):
     if not ctx.support_resistance:
         return L
 
-    L.append("\n---\n## 十四、支撑压力位\n")
+    L.append("\n---\n## 十七、支撑压力位\n")
 
     if ctx.support_resistance.get("resistance"):
         L.append("**压力位：**")
@@ -2181,7 +2423,7 @@ def _section_sentiment(ctx):
     if not ctx.sentiment_result:
         return L
 
-    L.append("\n---\n## 十五、新闻情感分析\n")
+    L.append("\n---\n## 十八、新闻情感分析\n")
     L.append(summarize_sentiment(ctx.sentiment_result))
 
     # 输出正/负面新闻标题及链接
@@ -2217,9 +2459,234 @@ def _section_risk_control(ctx):
     if not (ctx.risk_check and ctx.risk_check.get("warnings")):
         return L
 
-    L.append("\n---\n## 十六、风控提示\n")
+    L.append("\n---\n## 十九、风控提示\n")
     for warning in ctx.risk_check["warnings"]:
         L.append(f"- [!] {warning}")
+
+    return L
+
+
+def _section_tick_analysis(ctx):
+    """逐笔成交分析 — 大单异动检测"""
+    L = []
+    L.append("\n---\n## 四、逐笔成交分析\n")
+
+    ta = ctx.tick_analysis
+    if not ta or not ta.get("trades"):
+        L.append("> 暂无逐笔成交数据\n")
+        return L
+
+    total = ta["total_vol"]
+    large = ta["large_trades"]
+    large_vol = ta["large_vol"]
+    large_ratio = ta["large_ratio"]
+    avg = ta["avg_vol"]
+    max_v = ta["max_vol"]
+
+    L.append("基于当日所有逐笔成交数据分析大单异动情况：\n")
+    L.append("| 指标 | 数值 | 说明 |")
+    L.append("|------|------|------|")
+    L.append(f"| 分析笔数 | {len(ta['trades'])} 笔 | 最近逐笔成交样本 |")
+    L.append(f"| 总成交量 | {total} 手 | 样本合计 |")
+    L.append(f"| 平均每笔 | {avg} 手 | 单笔成交量均值 |")
+    L.append(f"| 最大单笔 | {max_v} 手 | 单笔最大成交量 |")
+    L.append(f"| 大单笔数 | {large} 笔（≥50手） | 占样本 {large_ratio}% |")
+    L.append(f"| 大单成交 | {large_vol} 手 | 占总成交量 {large_ratio}% |")
+
+    # 大单异动判断
+    L.append("\n### 大单异动评估\n")
+    signals = []
+    if large_ratio > 50:
+        signals.append("**大单主导**：超过 50% 的成交量来自 ≥50 手的大单，机构参与度极高")
+    elif large_ratio > 30:
+        signals.append("**机构活跃**：30%-50% 的成交量来自大单，机构有一定参与")
+    elif large_ratio > 10:
+        signals.append("**散户主导**：大单占比偏低（10%-30%），当前以散户交易为主")
+    else:
+        signals.append("**交投清淡**：大单占比不足 10%，机构参与度很低")
+
+    if avg >= 30:
+        signals.append("**平均单笔手数偏高**（≥30手），可能存在主力对倒或集中交易")
+    elif avg <= 5:
+        signals.append("**平均单笔手数偏低**（≤5手），散户化特征明显")
+
+    if max_v >= 500:
+        signals.append(f"**异常大单**：检测到单笔 {max_v} 手的超大单，需关注是否有重大消息")
+
+    # 大单聚集检测
+    clusters = ta.get("large_clusters", 0)
+    if clusters >= 5:
+        signals.append(f"**大单聚集**：检测到 {clusters} 次大单连续出现，主力可能在积极操作")
+    elif clusters >= 2:
+        signals.append(f"轻度聚集：{clusters} 次大单连续出现")
+
+    if not signals:
+        signals.append("未检测到明显的大单异动信号")
+
+    for s in signals:
+        L.append(f"- {s}")
+
+    return L
+
+
+def _section_sector_panorama(ctx):
+    """板块资金全景 — 全市场板块资金流向排名"""
+    L = []
+    L.append("\n---\n## 十、板块资金全景\n")
+
+    sp = ctx.sector_panorama
+    if not sp:
+        L.append("> 暂无板块资金数据\n")
+        return L
+
+    L.append(f"全市场 {len(sp)} 个行业板块资金流向全景（按今日主力净流入排序）：\n")
+
+    # 资金流入前10
+    inflows = [s for s in sp if s["主力净流入"] > 0][:10]
+    outflows = sorted([s for s in sp if s["主力净流入"] < 0], key=lambda x: x["主力净流入"])[:10]
+
+    if inflows:
+        L.append("### 资金净流入 TOP 10\n")
+        L.append("| 排名 | 板块 | 涨跌幅 | 主力净流入 | 主力占比 |")
+        L.append("|------|------|--------|------------|----------|")
+        for i, s in enumerate(inflows, 1):
+            L.append(f"| {i} | {s['名称']} | {s['涨跌幅']:+.2f}% | {fmt_num(s['主力净流入'])} | {s['主力占比']:.2f}% |")
+
+    if outflows:
+        L.append(f"\n### 资金净流出 TOP 10\n")
+        L.append("| 排名 | 板块 | 涨跌幅 | 主力净流出 | 主力占比 |")
+        L.append("|------|------|--------|------------|----------|")
+        for i, s in enumerate(outflows, 1):
+            L.append(f"| {i} | {s['名称']} | {s['涨跌幅']:+.2f}% | {fmt_num(abs(s['主力净流入']))} | {s['主力占比']:.2f}% |")
+
+    # 所属行业位置
+    if ctx.company_profile:
+        ind_name = ctx.company_profile.get("基本信息", {}).get("所属行业", "")
+        if ind_name:
+            L.append(f"\n### 所属行业定位\n")
+            # 模糊匹配找到所属板块
+            matched = None
+            for s in sp:
+                if ind_name in s["名称"] or s["名称"] in ind_name:
+                    matched = s
+                    break
+            if matched:
+                rank = next((i for i, s in enumerate(sp, 1) if s["名称"] == matched["名称"]), None)
+                L.append(f"- **{ind_name}**：全市场排名第 {rank} 位（共 {len(sp)} 个板块）")
+                flow_desc = "资金流入" if matched["主力净流入"] > 0 else "资金流出"
+                L.append(f"- 今日{flow_desc} {fmt_num(abs(matched['主力净流入']))}，涨跌幅 {matched['涨跌幅']:+.2f}%")
+            else:
+                L.append(f"- **{ind_name}**：未在板块排名中找到精确匹配")
+                # 显示相关板块
+                related = [s for s in sp if any(w in s['名称'] for w in ind_name[:4])][:3]
+                if related:
+                    L.append(f"- 相关板块：{'、'.join(s['名称'] for s in related)}")
+
+    return L
+
+
+def _section_financial_trends(ctx):
+    """历史财务趋势 — 近5年收入/利润/现金流走势"""
+    L = []
+    L.append("\n---\n## 七、历史财务趋势\n")
+
+    ft = ctx.financial_trends
+    if not ft or not ft.get("income"):
+        L.append("> 暂无历史财务数据\n")
+        return L
+
+    income_data = ft.get("income", [])
+
+    # 提取年度数据（12-31 报告期）
+    annual = [item for item in income_data if item["报告期"].endswith("-12-31")]
+    if len(annual) < 2:
+        # 回退：使用全部数据
+        annual = income_data
+
+    L.append(f"基于近 {len(annual)} 个年度财报的关键指标趋势：\n")
+
+    # 趋势表格
+    L.append("| 报告期 | 营业总收入(亿) | 归母净利润(亿) | 净利率 | 营收增速 | 利润增速 |")
+    L.append("|--------|---------------|---------------|--------|----------|----------|")
+    prev_rev = None
+    prev_profit = None
+    for item in annual:
+        rd = item["报告期"]
+        rev = item["营业总收入"] / 1e8
+        profit = item["归母净利润"] / 1e8
+        margin = (profit / rev * 100) if rev > 0 else 0
+
+        rev_growth = ((rev / prev_rev - 1) * 100) if prev_rev else None
+        profit_growth = ((profit / prev_profit - 1) * 100) if prev_profit else None
+
+        rev_g_str = f"{rev_growth:+.1f}%" if rev_growth is not None else "-"
+        profit_g_str = f"{profit_growth:+.1f}%" if profit_growth is not None else "-"
+
+        L.append(f"| {rd} | {rev:.2f} | {profit:.2f} | {margin:.1f}% | {rev_g_str} | {profit_g_str} |")
+        prev_rev = rev
+        prev_profit = profit
+
+    # CAGR 计算
+    if len(annual) >= 2:
+        first = annual[0]
+        last = annual[-1]
+        years = len(annual) - 1
+        rev_first = first["营业总收入"] / 1e8
+        rev_last = last["营业总收入"] / 1e8
+        profit_first = first["归母净利润"] / 1e8
+        profit_last = last["归母净利润"] / 1e8
+
+        rev_cagr = ((rev_last / rev_first) ** (1 / years) - 1) * 100 if rev_first > 0 else 0
+        profit_cagr = ((profit_last / profit_first) ** (1 / years) - 1) * 100 if profit_first > 0 else 0
+
+        L.append(f"\n### 成长性指标\n")
+        L.append(f"- **营收 CAGR（{years}年）**：{rev_cagr:+.1f}%")
+        L.append(f"- **利润 CAGR（{years}年）**：{profit_cagr:+.1f}%")
+
+        # 趋势判断
+        if rev_cagr > 20 and profit_cagr > 20:
+            L.append("- **成长性**：高速增长，营收和利润同步快速扩张")
+        elif rev_cagr > 10 and profit_cagr > 10:
+            L.append("- **成长性**：稳健增长")
+        elif rev_cagr > 0 and profit_cagr < rev_cagr:
+            L.append("- **成长性**：增收不增利，利润增速落后于营收，成本端可能有压力")
+        elif rev_cagr > 0 and profit_cagr <= 0:
+            L.append("- **成长性**：增收不增利，盈利能力下降需关注")
+
+    # 现金流质量
+    cf_data = ft.get("cashflow", [])
+    cf_annual = [item for item in cf_data if item["报告期"].endswith("-12-31")]
+    if cf_annual and len(cf_annual) >= 2:
+        L.append(f"\n### 现金流质量\n")
+        L.append("| 报告期 | 经营现金流(亿) | 净利润(亿) | 现金流/净利润 |")
+        L.append("|--------|---------------|-----------|---------------|")
+        # Align cashflow with income data
+        for i, cf_item in enumerate(cf_annual):
+            rd = cf_item["报告期"]
+            ocf = cf_item["经营现金流"] / 1e8
+            # Find matching income
+            inc_item = next((item for item in annual if item["报告期"] == rd), None)
+            profit = inc_item["归母净利润"] / 1e8 if inc_item else 0
+            ratio = (ocf / profit) if profit > 0 else 0
+            quality = "优秀" if ratio > 1 else "良好" if ratio > 0.7 else "偏低" if ratio > 0 else "负值⚠"
+            L.append(f"| {rd} | {ocf:.2f} | {profit:.2f} | {ratio:.2f}（{quality}） |")
+
+        # 整体评价
+        recent_ratios = []
+        for i, cf_item in enumerate(cf_annual[-3:]):
+            rd = cf_item["报告期"]
+            inc_item = next((item for item in annual if item["报告期"] == rd), None)
+            profit = inc_item["归母净利润"] / 1e8 if inc_item else 0
+            ocf = cf_item["经营现金流"] / 1e8
+            recent_ratios.append((ocf / profit) if profit > 0 else 0)
+
+        avg_ratio = sum(recent_ratios) / len(recent_ratios) if recent_ratios else 0
+        if avg_ratio > 1:
+            L.append(f"\n- **现金流质量：优秀** — 近3年经营现金流持续大于净利润，利润含金量高")
+        elif avg_ratio > 0.7:
+            L.append(f"\n- **现金流质量：良好** — 经营现金流基本覆盖净利润")
+        else:
+            L.append(f"\n- **现金流质量：需关注** — 经营现金流与净利润差距较大")
 
     return L
 
@@ -2289,7 +2756,8 @@ def generate_report(code, name, df, indicators, fund_flow, north_flow, quote, ne
                     weighted_score=None, stop_loss=None, target=None,
                     support_resistance=None, position=None, risk_check=None,
                     sentiment_result=None, company_profile=None,
-                    llm_interpretation=None):
+                    llm_interpretation=None,
+                    tick_analysis=None, sector_panorama=None, financial_trends=None):
     """生成单个综合分析报告"""
     ctx = ReportContext(
         code=code, name=name, df=df, indicators=indicators,
@@ -2305,6 +2773,9 @@ def generate_report(code, name, df, indicators, fund_flow, north_flow, quote, ne
         sentiment_result=sentiment_result,
         company_profile=company_profile,
         llm_interpretation=llm_interpretation,
+        tick_analysis=tick_analysis,
+        sector_panorama=sector_panorama,
+        financial_trends=financial_trends,
         price=indicators.get("最新价", 0),
         now=datetime.datetime.now().strftime('%Y-%m-%d %H:%M')
     )
@@ -2313,8 +2784,10 @@ def generate_report(code, name, df, indicators, fund_flow, north_flow, quote, ne
     for section_fn in [
         _section_title, _section_company_profile, _section_company_analysis,
         _section_summary, _section_market_overview, _section_technical_analysis,
-        _section_fund_flow, _section_fundamentals, _section_financial_screen,
-        _section_news, _section_industry_board, _section_extended_indicators,
+        _section_fund_flow, _section_tick_analysis, _section_fundamentals,
+        _section_financial_screen, _section_financial_trends,
+        _section_news, _section_industry_board, _section_sector_panorama,
+        _section_extended_indicators,
         _section_valuation_percentile, _section_industry_comparison,
         _section_ai_interpretation,  # AI 增强解读（--llm 启用时生成）
         _section_counter_evidence, _section_weighted_score,
@@ -2406,10 +2879,11 @@ def analyze_stock(code, output_dir=".", llm_enabled=False):
 
     if us_mode:
         fund_flow, north_flow, news_df, industry_df, financial_data = {}, {}, pd.DataFrame(), pd.DataFrame(), {}
+        tick_analysis, sector_panorama, financial_trends = None, [], {}
         tick_request_queue("跳过美股专属")
     else:
-        print("[3] 获取资金流向... [从行情数据提取，零额外请求]")
-        fund_flow = fetch_fund_flow(code, quote=quote)
+        print("[3] 获取资金流向...")
+        fund_flow = fetch_fund_flow(code)
         tick_request_queue("资金流向")
 
         print("[4] 获取北向资金... [Memo 跨分析缓存]")
@@ -2428,6 +2902,20 @@ def analyze_stock(code, output_dir=".", llm_enabled=False):
     print("[7] 获取公司概况...")
     company_profile = fetch_company_profile(code)
     tick_request_queue("公司概况")
+
+    # ── 新增强：逐笔成交 + 板块全景 + 历史财务（A股专属）──
+    if not us_mode:
+        print("[7b] 获取逐笔成交...")
+        tick_analysis = fetch_tick_details(code)
+        tick_request_queue("逐笔成交")
+
+        print("[7c] 获取板块资金全景...")
+        sector_panorama = fetch_sector_fund_flow_panorama()
+        tick_request_queue("板块全景")
+
+        print("[7d] 获取历史财务趋势...")
+        financial_trends = fetch_historical_financials(code)
+        tick_request_queue("历史财务")
 
     print("[8] 计算技术指标...")
     indicators = calculate_indicators(df_hist)
@@ -2523,7 +3011,10 @@ def analyze_stock(code, output_dir=".", llm_enabled=False):
         extended_indicators, valuation_percentile, industry_comparison,
         weighted_score, stop_loss, target,
         support_resistance, position, risk_check, sentiment_result,
-        company_profile, llm_interpretation
+        company_profile, llm_interpretation,
+        tick_analysis=tick_analysis,
+        sector_panorama=sector_panorama,
+        financial_trends=financial_trends,
     )
     today = datetime.date.today().strftime("%Y%m%d")
     report_file = (out_path / f"{code}-{name}-分析报告-{today}.md").resolve()
