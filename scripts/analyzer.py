@@ -19,7 +19,8 @@ from .utils import (_http_get, _http_get_safe, safe_num, safe_display,
     init_request_queue, tick_request_queue,
     memo_get, memo_set, get_session_request_stats)
 from .alternative_sources import (fetch_quote_tencent, fetch_quote_sina,
-    fetch_kline_tencent, fetch_kline_sina, fetch_fund_flow_tencent)
+    fetch_kline_tencent, fetch_kline_sina, fetch_fund_flow_tencent,
+    fetch_financial_indicators_datacenter)
 try:
     from .akshare_sources import (
         fetch_kline_akshare, fetch_quote_akshare,
@@ -238,6 +239,8 @@ def fetch_realtime_quote(code):
     try:
         alt_quote = fetch_quote_tencent(code)
         if alt_quote and alt_quote.get("f2", 0) > 0:
+            # 备选源缺少 ROE/毛利率/净利增速等财务指标，从 datacenter 独立补全
+            _patch_quote_financials(alt_quote, code)
             print(f"  [提示] 实时行情来自 {alt_quote.get('_source', '腾讯财经')}（东方财富不可用）")
             return alt_quote
     except Exception:
@@ -246,6 +249,7 @@ def fetch_realtime_quote(code):
     try:
         alt_quote = fetch_quote_sina(code)
         if alt_quote and alt_quote.get("f2", 0) > 0:
+            _patch_quote_financials(alt_quote, code)
             print(f"  [提示] 实时行情来自新浪财经（所有主数据源不可用）")
             return alt_quote
     except Exception:
@@ -917,13 +921,16 @@ def fetch_historical_financials(code):
         }
     """
     result = {"income": [], "cashflow": []}
+    market_code, _, _ = get_market_info(code)
+    market_suffix = {"SH": "SH", "SZ": "SZ", "BJ": "BJ"}.get(market_code, "SZ")
+    secucode = f"{code}.{market_suffix}"
 
     try:
         # 利润表
         params1 = {
             "type": "RPT_DMSK_FN_INCOME",
             "sty": "ALL",
-            "filter": f'(SECUCODE="{code}.SZ")(REPORT_DATE>=\'2021-01-01\')',
+            "filter": f'(SECUCODE="{secucode}")(REPORT_DATE>=\'2021-01-01\')',
             "p": "1", "ps": "20",
             "sr": "1", "st": "REPORT_DATE",
             "source": "HSF10", "client": "PC",
@@ -943,7 +950,7 @@ def fetch_historical_financials(code):
         params2 = {
             "type": "RPT_DMSK_FN_CASHFLOW",
             "sty": "ALL",
-            "filter": f'(SECUCODE="{code}.SZ")(REPORT_DATE>=\'2021-01-01\')',
+            "filter": f'(SECUCODE="{secucode}")(REPORT_DATE>=\'2021-01-01\')',
             "p": "1", "ps": "20",
             "sr": "1", "st": "REPORT_DATE",
             "source": "HSF10", "client": "PC",
@@ -959,6 +966,30 @@ def fetch_historical_financials(code):
         pass
 
     return result
+
+
+def _patch_quote_financials(quote, code):
+    """从 datacenter 补全备选源缺失的财务指标（原地修改 quote dict）。
+
+    腾讯/新浪财经只提供 PE/PB/市值/价格，不提供 ROE/毛利率/营收/净利增速/
+    资产负债率/每股收益。此函数从独立的 datacenter API 获取这些字段，
+    覆盖 quote 中值为 0 的项。
+    """
+    # 检查是否有需要修补的字段
+    financial_keys = ["f37", "f49", "f40", "f41", "f34", "f115"]
+    needs_patch = any(quote.get(k, 0) == 0 for k in financial_keys)
+    if not needs_patch:
+        return
+
+    try:
+        indicators = fetch_financial_indicators_datacenter(code)
+        if not indicators:
+            return
+        for k, v in indicators.items():
+            if v != 0 and quote.get(k, 0) == 0:
+                quote[k] = v
+    except Exception:
+        pass  # 补全失败不影响主流程
 
 
 # 常见股票名称映射（网络不稳定时的备用方案）

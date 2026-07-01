@@ -453,6 +453,94 @@ def fetch_fund_flow_tencent(code):
 
 
 # ============================================================
+# datacenter — 财务指标补全（备选源缺失的 ROE/毛利率/净利增速等）
+# ============================================================
+
+def fetch_financial_indicators_datacenter(code):
+    """当实时行情来自备选源（腾讯/新浪等）时，从 datacenter 独立获取关键财务指标。
+
+    备选源仅提供价格/PE/PB/市值，缺少 ROE/毛利率/营收/净利增速/负债率/EPS。
+    datacenter.eastmoney.com 是独立数据服务，不依赖 push2，备选源场景下仍可用。
+
+    Args:
+        code: 股票代码
+
+    Returns:
+        dict: {'f37': ROE, 'f49': 毛利率, 'f40': 营收, 'f41': 净利增速,
+               'f34': 资产负债率, 'f115': 每股收益}
+        失败返回空 dict {}
+    """
+    try:
+        from .market_utils import get_market_info
+        market_code, _, _ = get_market_info(code)
+    except (ImportError, Exception):
+        market_code = "SZ" if code.startswith(("0", "3", "2")) else "SH"
+    market_suffix = {"SH": "SH", "SZ": "SZ", "BJ": "BJ"}.get(market_code, "SZ")
+    secucode = f"{code}.{market_suffix}"
+
+    result = {}
+    try:
+        # RPT_F10_FINANCE_MAINFINADATA — 关键财务指标（来自 F10 主要财务数据表）
+        params = (
+            f"?type=RPT_F10_FINANCE_MAINFINADATA"
+            f"&sty=ALL"
+            f"&filter=(SECUCODE=%22{secucode}%22)(REPORT_DATE%3E=%272024-01-01%27)"
+            f"&p=1&ps=4&sr=-1&st=REPORT_DATE"
+            f"&source=HSF10&client=PC"
+        )
+        raw = _http_fetch(
+            "datacenter.eastmoney.com",
+            f"/api/data/get{params}",
+            timeout=10,
+        )
+        if not raw:
+            return result
+
+        import json as _json
+        j = _json.loads(raw)
+        items = j.get("result", {}).get("data", []) if j else []
+        if not items:
+            return result
+
+        latest = items[0]
+
+        # ROE（加权净资产收益率，%）→ f37
+        roe = _local_safe_num(latest.get("ROEJQ", 0))
+        if roe != 0:
+            result["f37"] = roe
+
+        # 销售毛利率 → f49
+        gross_margin = _local_safe_num(latest.get("XSMLL", 0))
+        if gross_margin > 0:
+            result["f49"] = gross_margin
+
+        # 营业总收入（元）→ f40
+        revenue = _local_safe_num(latest.get("TOTALOPERATEREVE", 0))
+        if revenue > 0:
+            result["f40"] = revenue
+
+        # 归属净利润同比增长率（%）→ f41
+        profit_yoy = _local_safe_num(latest.get("PARENTNETPROFITTZ", 0))
+        if profit_yoy != 0:
+            result["f41"] = profit_yoy
+
+        # 资产负债率（%）→ f34
+        debt_ratio = _local_safe_num(latest.get("ZCFZL", 0))
+        if debt_ratio > 0:
+            result["f34"] = debt_ratio
+
+        # 基本每股收益（元）→ f115
+        eps = _local_safe_num(latest.get("EPSJB", 0))
+        if eps != 0:
+            result["f115"] = eps
+
+    except Exception:
+        pass
+
+    return result
+
+
+# ============================================================
 # 多源统一接口
 # ============================================================
 
