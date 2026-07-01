@@ -211,6 +211,29 @@ _request_cache = {}
 _cache_ttl = 300
 _MEMO_CACHE = {}  # 跨分析 Memoization 缓存
 
+# 预检缓存：run_preflight() 填充，_http_get() 读取
+_preflight_cache = {}
+_preflight_ts = 0
+_PREFLIGHT_TTL = 300  # 5 分钟
+
+
+def set_preflight_cache(cache):
+    """由 data_validator.run_preflight() 调用，填充预检结果。"""
+    global _preflight_cache, _preflight_ts
+    _preflight_cache = cache
+    _preflight_ts = time.time()
+
+
+def _preflight_ok(host):
+    """检查预检缓存中 host 是否可用。缓存过期或无记录时返回 True（放行）。"""
+    global _preflight_cache, _preflight_ts
+    if time.time() - _preflight_ts > _PREFLIGHT_TTL:
+        return True  # 缓存过期，放行
+    entry = _preflight_cache.get(host)
+    if entry is None:
+        return True  # 未预检过该 host，放行
+    return entry.get("ok", True)
+
 _CACHE_TTL_MAP = {
     "/api/qt/stock/kline/get": 1800,
     "/api/qt/stock/get": 300,
@@ -628,6 +651,10 @@ def _http_get(host, path, params=None, timeout=15, retries=2, use_cache=True):
     5. 连接拒绝不重试，其他错误指数退避
     6. 成功后更新断路器 + 自适应计数器
     """
+    # ── 预检跳过（快速路径：已知不可用的 host 直接跳过）──
+    if not _preflight_ok(host):
+        raise ConnectionError(f"Host {host} preflight check failed — skip")
+
     # ── 缓存 ──
     if use_cache:
         cache_key = _get_cache_key(host, path, params)

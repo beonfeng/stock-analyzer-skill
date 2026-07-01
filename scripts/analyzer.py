@@ -21,6 +21,7 @@ from .utils import (_http_get, _http_get_safe, safe_num, safe_display,
 from .alternative_sources import (fetch_quote_tencent, fetch_quote_sina,
     fetch_kline_tencent, fetch_kline_sina, fetch_fund_flow_tencent,
     fetch_financial_indicators_datacenter)
+from .data_validator import run_preflight, print_validation_report
 try:
     from .akshare_sources import (
         fetch_kline_akshare, fetch_quote_akshare,
@@ -2869,8 +2870,9 @@ def analyze_stock(code, output_dir=".", llm_enabled=False):
     out_path = Path(output_dir) / "分析报告"
     out_path.mkdir(parents=True, exist_ok=True)
     print(f"  输出目录: {out_path}")
-
     # ── 冷启动预热：预加载市场级数据 ──
+    # 数据源预检（结果写入 utils._preflight_cache，后续 _http_get 自动跳过不可用源）
+    run_preflight()
     # 美股模式跳过 A 股专属的北向资金预热（节省 API 请求额度）
     print("  [预热] 预加载市场级数据...")
     try:
@@ -3067,6 +3069,10 @@ def analyze_stock(code, output_dir=".", llm_enabled=False):
     print_request_stats()
 
     print(f"\n分析完成! 报告已保存至: {report_file}")
+
+    # 报告数据校验
+    print_validation_report(str(report_file))
+
     return str(report_file)
 
 
